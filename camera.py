@@ -113,11 +113,8 @@ def _apply_night_vision(frame: np.ndarray) -> np.ndarray:
     # -- Step 4: light denoise to kill salt-and-pepper sensor noise
     gray_dn = cv2.fastNlMeansDenoising(gray_eq, h=10, templateWindowSize=7, searchWindowSize=21)
 
-    # -- Step 5: green phosphor tint — map grayscale into green channel only
-    zeros = np.zeros_like(gray_dn)
-    # slight blue tint for that classic scope look
-    blue  = (gray_dn.astype(np.uint16) * 30 // 100).astype(np.uint8)
-    return cv2.merge([blue, gray_dn, zeros])
+    # -- Step 5: return as grayscale BGR (all channels equal)
+    return cv2.cvtColor(gray_dn, cv2.COLOR_GRAY2BGR)
 
 
 

@@ -329,21 +329,40 @@ class KinectSource:
     @staticmethod
     def _ir_to_bgr(gray: np.ndarray | None) -> np.ndarray | None:
         """
-        Convert raw IR grayscale to a 3-channel BGR frame for display and
-        face detection. No colour tint — pure IR sensor output with CLAHE
-        contrast enhancement so dark scenes are visible.
+        Convert raw Kinect IR to a military-style green phosphor NV frame.
+
+        Pipeline:
+          1. Scale 10-bit → 8-bit if needed
+          2. Median blur to kill the Kinect structured-light dot pattern
+          3. Gaussian blur to smooth sensor noise before CLAHE
+          4. CLAHE for local contrast stretch
+          5. Unsharp mask to recover edge detail lost in blur
+          6. Green phosphor tint (BGR: 20% blue, 100% green, 0% red)
         """
         if gray is None:
             return None
         import cv2
-        # Scale 10-bit down to 8-bit if needed
+
+        # 1. Scale 10-bit → 8-bit
         if gray.dtype != np.uint8:
             gray = np.clip(gray.astype(np.float32) / 4.0, 0, 255).astype(np.uint8)
-        # CLAHE to stretch local contrast — makes faces pop in IR
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        eq    = clahe.apply(gray)
-        # Return as BGR with all channels identical (true grayscale)
-        return cv2.cvtColor(eq, cv2.COLOR_GRAY2BGR)
+
+        # 2. Kill the Kinect dot-pattern noise with median blur
+        gray = cv2.medianBlur(gray, 5)
+
+        # 3. Light Gaussian blur before CLAHE for smoother result
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        # 4. CLAHE — stronger clip for more punch
+        clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(6, 6))
+        gray  = clahe.apply(gray)
+
+        # 5. Unsharp mask — recover edge detail lost in blur steps
+        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+        gray   = cv2.filter2D(gray, -1, kernel)
+
+        # 6. Return as grayscale BGR (all channels equal)
+        return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
     def _open_motor(self) -> None:
         """Open a device handle for motor/LED control."""
