@@ -425,6 +425,12 @@ class CameraLoop:
                             _draw_face(annotated, face, match.person_name,
                                        match.score, color=(0, 255, 0))
                             _log_recognized(face, match)
+                            # Cancel any pending unknown tracker — this is a known person
+                            if tracker.active or tracker.confirming:
+                                logger.info("Known person recognised — cancelling unknown tracker")
+                                if tracker.active:
+                                    recorder.signal_unknown_gone()
+                                tracker.reset()
                         else:
                             unknown_in_frame = True
                             _draw_face(annotated, face,
@@ -618,7 +624,7 @@ def _log_recognized(face: DetectedFace, match) -> None:
     now = time.monotonic()
     key = match.person_id
     last = _recognized_throttle.get(key, 0)
-    if now - last < 30:
+    if now - last < 60:
         return
     _recognized_throttle[key] = now
 
