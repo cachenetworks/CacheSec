@@ -142,33 +142,45 @@ _night_vision_active = False
 
 class _UnknownTracker:
     """
-    Tracks a continuous unknown-person event to prevent duplicate DB rows.
+    Tracks a continuous unknown-person event to prevent duplicate DB rows
+    and require a sustained presence before triggering an alert.
 
     State machine:
-      IDLE   → face appears → ACTIVE (create event, start recording)
-      ACTIVE → face gone   → COOLDOWN (signal recorder to stop after its gap)
-      COOLDOWN → cooldown_secs elapsed → IDLE (ready for next event)
+      IDLE      → face appears → CONFIRMING (accumulate confirm_secs)
+      CONFIRMING → face held for confirm_secs → ACTIVE (create event, start recording)
+      CONFIRMING → face disappears → back to IDLE (false positive / glance)
+      ACTIVE    → face gone   → COOLDOWN (signal recorder to stop after its gap)
+      COOLDOWN  → cooldown_secs elapsed → IDLE (ready for next event)
 
-    This prevents re-triggering the moment someone re-enters frame after
-    the recording stops.
+    confirm_secs prevents a single-frame or brief appearance from triggering
+    an alert — the person must be in frame continuously for ~3-4 seconds.
     """
+
+    CONFIRM_SECS = 3.5   # must be seen this long before alert fires
 
     def __init__(self):
         self.active              = False
+        self.confirming          = False      # seen but not yet confirmed
+        self.confirm_start       = 0.0        # when we first saw this unknown
         self.event_id: int | None = None
         self.last_seen           = 0.0
-        self.last_event_time     = 0.0        # time the most recent event was created
+        self.last_event_time     = 0.0
         self.cooldown_secs       = config.UNKNOWN_COOLDOWN_SECONDS
 
     def reset(self):
         self.active        = False
+        self.confirming    = False
+        self.confirm_start = 0.0
         self.event_id      = None
         self.last_seen     = 0.0
-        self.last_event_time = time.monotonic()   # start cooldown clock
+        self.last_event_time = time.monotonic()
 
     def in_cooldown(self) -> bool:
-        """True if we're still within the post-event cooldown window."""
         return (time.monotonic() - self.last_event_time) < self.cooldown_secs
+
+    def is_confirmed(self) -> bool:
+        """True once the unknown has been in frame long enough to trigger."""
+        return self.confirming and (time.monotonic() - self.confirm_start) >= self.CONFIRM_SECS
 
     def is_expired(self) -> bool:
         return (
@@ -425,18 +437,41 @@ class CameraLoop:
                 if unknown_in_frame:
                     tracker.last_seen = time.monotonic()
                     if tracker.active:
+                        # Already confirmed and recording — keep signalling
                         recorder.signal_unknown_visible(tracker.event_id)
                     elif not tracker.in_cooldown():
-                        event_id = _create_unknown_event(frame)
-                        tracker.active          = True
-                        tracker.event_id        = event_id
-                        tracker.last_event_time = time.monotonic()
-                        recorder.signal_unknown_visible(event_id)
-                        _alert_unknown(event_id, frame)
+                        if not tracker.confirming:
+                            # First sighting — start the confirmation timer
+                            tracker.confirming    = True
+                            tracker.confirm_start = time.monotonic()
+                            logger.debug("Unknown face seen — confirming (need %.1fs)", tracker.CONFIRM_SECS)
+                        elif tracker.is_confirmed():
+                            # Held long enough — fire the alert
+                            event_id = _create_unknown_event(frame)
+                            tracker.active          = True
+                            tracker.confirming      = False
+                            tracker.event_id        = event_id
+                            tracker.last_event_time = time.monotonic()
+                            recorder.signal_unknown_visible(event_id)
+                            _alert_unknown(event_id, frame)
+                        # else: still accumulating confirm time — show "VERIFYING" label
+                        if tracker.confirming and not tracker.active:
+                            elapsed = time.monotonic() - tracker.confirm_start
+                            remaining = max(0, tracker.CONFIRM_SECS - elapsed)
+                            # Overlay a "verifying" countdown on the annotated frame
+                            cv2.putText(annotated,
+                                        f"Verifying... {remaining:.1f}s",
+                                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
+                                        0.7, (0, 200, 255), 2)
                 else:
                     if tracker.active:
                         recorder.signal_unknown_gone()
                         tracker.reset()
+                    elif tracker.confirming:
+                        # Disappeared before confirmation — reset silently
+                        tracker.confirming    = False
+                        tracker.confirm_start = 0.0
+                        logger.debug("Unknown face gone before confirmation — ignoring")
 
                 _set_latest_jpeg(annotated)
 

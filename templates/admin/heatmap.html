@@ -53,24 +53,20 @@
     <small class="text-muted ms-2">Blue = rarely detected · Red = frequently detected</small>
   </div>
   <div class="card-body p-2 text-center">
-    <div class="position-relative d-inline-block" style="max-width:640px;width:100%;">
-      <!-- Background: latest camera still -->
-      <!-- Camera background loaded via JS to avoid broken-image if offline -->
-      <img id="cam-bg"
-           class="img-fluid rounded w-100"
-           style="opacity:0.35; display:none;"
-           alt="">
-      <!-- Heatmap overlay PNG (BGRA with alpha) -->
+    <div class="position-relative mx-auto rounded overflow-hidden bg-dark"
+         style="max-width:640px; width:100%; aspect-ratio:4/3;">
+      <!-- Heatmap PNG (BGRA with alpha channel) fills the box -->
       <img id="heatmap-img"
            src="{{ url_for('admin.heatmap_png') }}"
-           class="position-absolute top-0 start-0 w-100 h-100 rounded"
-           style="object-fit:fill;"
+           class="w-100 h-100 rounded"
+           style="object-fit:fill; display:block;"
            alt="Heatmap">
-      <!-- Placeholder if no data -->
-      <div id="no-data-msg" class="position-absolute top-50 start-50 translate-middle text-muted"
-           style="{% if stats.total > 0 %}display:none{% endif %}">
-        <i class="bi bi-camera-video-off fs-2 d-block mb-2"></i>
-        No detections recorded yet
+      <!-- Placeholder shown when no data -->
+      <div id="no-data-msg"
+           class="position-absolute top-50 start-50 translate-middle text-muted text-center"
+           style="pointer-events:none;{% if stats.total > 0 %}display:none;{% endif %}">
+        <i class="bi bi-fire fs-2 d-block mb-2 opacity-25"></i>
+        <span class="small">No detections recorded yet</span>
       </div>
     </div>
     <div class="mt-2">
