@@ -48,7 +48,11 @@ variables:
     - echo "$REGISTRY_PASSWORD" | docker login -u "$REGISTRY_USER" --password-stdin "$REGISTRY_HOST"
     # Register QEMU emulators so we can build arm64 on an amd64 runner.
     - docker run --rm --privileged tonistiigi/binfmt --install all
-    - docker buildx create --use --name cachesec --driver docker-container
+    # The docker-container buildx driver cannot load the dind TLS certs from
+    # the environment directly, so snapshot the current env into a named
+    # docker context and build the builder against that context instead.
+    - docker context create cachesec-ctx
+    - docker buildx create --use --name cachesec --driver docker-container cachesec-ctx
     - docker buildx inspect --bootstrap
   script:
     - |
