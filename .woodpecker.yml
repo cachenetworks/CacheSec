@@ -1,0 +1,98 @@
+# =============================================================================
+# CacheSec — Woodpecker CI build pipeline
+#
+# Builds the multi-variant container images (same matrix as the GitHub
+# workflow) with the docker-buildx plugin (multi-arch amd64 / arm64) and
+# pushes them to your registry. Pairs well with a self-hosted Gitea/Forgejo
+# or GitLab forge.
+#
+# ---------------------------------------------------------------------------
+# SETUP
+#   1. Edit the two REGISTRY/REPO lines marked "EDIT" below to point at your
+#      registry and image path.
+#   2. Add two repo secrets in the Woodpecker UI (Repo > Settings > Secrets),
+#      both available to the docker-buildx plugin image:
+#         registry_username
+#         registry_password   (token with package:write)
+#   3. The docker-buildx plugin needs PRIVILEGED mode. A Woodpecker admin must
+#      trust this plugin image (Server setting WOODPECKER_PLUGINS_PRIVILEGED
+#      includes `woodpeckerci/plugin-docker-buildx`) so it can run buildx/QEMU.
+# =============================================================================
+
+matrix:
+  include:
+    - VARIANT: cpu
+      INSTALL_KINECT: "false"
+      INSTALL_KINECT2: "false"
+      INSTALL_DETECTRON2: "false"
+      TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
+      PLATFORMS: "linux/amd64,linux/arm64"
+      TAGS: "cpu,latest"
+    - VARIANT: pi
+      INSTALL_KINECT: "false"
+      INSTALL_KINECT2: "false"
+      INSTALL_DETECTRON2: "false"
+      TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
+      PLATFORMS: "linux/arm64"
+      TAGS: "pi"
+    - VARIANT: kinect
+      INSTALL_KINECT: "true"
+      INSTALL_KINECT2: "false"
+      INSTALL_DETECTRON2: "false"
+      TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
+      PLATFORMS: "linux/amd64,linux/arm64"
+      TAGS: "kinect,kinect1"
+    - VARIANT: kinect2
+      INSTALL_KINECT: "false"
+      INSTALL_KINECT2: "true"
+      INSTALL_DETECTRON2: "false"
+      TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
+      PLATFORMS: "linux/amd64,linux/arm64"
+      TAGS: "kinect2"
+    - VARIANT: detectron2-cpu
+      INSTALL_KINECT: "false"
+      INSTALL_KINECT2: "false"
+      INSTALL_DETECTRON2: "true"
+      TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
+      PLATFORMS: "linux/amd64,linux/arm64"
+      TAGS: "detectron2,detectron2-cpu"
+    - VARIANT: detectron2-cuda11
+      INSTALL_KINECT: "false"
+      INSTALL_KINECT2: "false"
+      INSTALL_DETECTRON2: "true"
+      TORCH_INDEX_URL: "https://download.pytorch.org/whl/cu118"
+      PLATFORMS: "linux/amd64"
+      TAGS: "cuda11,detectron2-cuda11"
+    - VARIANT: detectron2-cuda12
+      INSTALL_KINECT: "false"
+      INSTALL_KINECT2: "false"
+      INSTALL_DETECTRON2: "true"
+      TORCH_INDEX_URL: "https://download.pytorch.org/whl/cu121"
+      PLATFORMS: "linux/amd64"
+      TAGS: "cuda12,detectron2-cuda12"
+
+steps:
+  build:
+    image: woodpeckerci/plugin-docker-buildx:5
+    settings:
+      registry: registry.example.com                       # EDIT: your registry host
+      repo: registry.example.com/you/cachesec              # EDIT: registry host + image path
+      dockerfile: Dockerfile
+      platforms: ${PLATFORMS}
+      tags: ${TAGS}
+      # On a git tag push, also publish semver-derived tags (e.g. 1.2.3).
+      auto_tag: true
+      auto_tag_suffix: ${VARIANT}
+      username:
+        from_secret: registry_username
+      password:
+        from_secret: registry_password
+      build_args:
+        - INSTALL_KINECT=${INSTALL_KINECT}
+        - INSTALL_KINECT2=${INSTALL_KINECT2}
+        - INSTALL_DETECTRON2=${INSTALL_DETECTRON2}
+        - TORCH_INDEX_URL=${TORCH_INDEX_URL}
+    when:
+      - event: push
+        branch: [main, master]
+      - event: tag
