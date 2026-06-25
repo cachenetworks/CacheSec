@@ -54,15 +54,23 @@ def timestamped_filename(prefix: str, ext: str) -> str:
 # ---------------------------------------------------------------------------
 
 def get_client_ip() -> str:
-    """Return the real client IP, honouring CF-Connecting-IP and X-Forwarded-For."""
-    # Cloudflare always sets CF-Connecting-IP
-    cf_ip = request.headers.get("CF-Connecting-IP")
-    if cf_ip:
-        return cf_ip.strip()
-    xff = request.headers.get("X-Forwarded-For", "")
-    if xff:
-        # Take the first IP in the chain (original client)
-        return xff.split(",")[0].strip()
+    """Return the real client IP, honouring CF-Connecting-IP and X-Forwarded-For.
+
+    These headers are only trusted when a trusted proxy is actually configured
+    (PROXY_COUNT > 0). When the app is reachable directly, they are fully
+    attacker-controlled — trusting them would let a client present a fresh
+    fake IP on every request to evade the per-IP login lockout and to forge
+    audit-log entries. In that case we fall back to the real socket peer.
+    """
+    if getattr(config, "PROXY_COUNT", 0) > 0:
+        # Cloudflare always sets CF-Connecting-IP
+        cf_ip = request.headers.get("CF-Connecting-IP")
+        if cf_ip:
+            return cf_ip.strip()
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            # Take the first IP in the chain (original client)
+            return xff.split(",")[0].strip()
     return request.remote_addr or "unknown"
 
 
