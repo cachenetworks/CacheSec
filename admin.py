@@ -275,11 +275,28 @@ def api_camera_control():
             except ValueError:
                 index = 0
         ks = get_kinect(index)
+        if action in {"left", "right"}:
+            return jsonify({
+                "ok": False,
+                "error": "Kinect only tilts up/down — it has no left/right pan motor.",
+            }), 400
+        if not ks.motor_available:
+            return jsonify({
+                "ok": False,
+                "error": "Kinect motor is disabled. Enable 'Kinect Motor / Tilt Control' in "
+                         "Settings and save — the camera restarts automatically to pick it up.",
+            }), 400
         if action == "up":
             ks.set_tilt((ks.get_tilt_angle() or 0.0) + 5.0)
         elif action == "down":
             ks.set_tilt((ks.get_tilt_angle() or 0.0) - 5.0)
-        return jsonify({"ok": True, "source": source, "source_id": source_id, "action": action})
+        return jsonify({
+            "ok": True,
+            "source": source,
+            "source_id": source_id,
+            "action": action,
+            "tilt_degrees": ks.get_tilt_angle(),
+        })
 
     return jsonify({
         "ok": False,
@@ -975,6 +992,8 @@ def settings():
         "recognition_threshold",
         "frame_skip",
         "night_vision_mode",
+        "ghost_hunting_mode",
+        "kinect_motor_enabled",
         "setup_cameras",
         "camera_preferred_source",
         "camera_index",
@@ -1039,6 +1058,7 @@ def settings():
             "usb_camera_auto_discover",
             "usb_camera_scan_limit",
             "multi_camera_detection_enabled",
+            "kinect_motor_enabled",
             "ip_camera_url",
             "ip_camera_urls",
             "ip_camera_rtsp_transport",
@@ -1164,6 +1184,7 @@ def api_status():
         "night_vision":        cam.get("night_vision", False),
         "sls_enabled":         cam.get("sls_enabled", False),
         "sls_active":          cam.get("sls_active", False),
+        "ghost_hunting_mode":  cam.get("ghost_hunting_mode", False),
         "depth":               cam.get("depth", False),
         "is_recording":        rec.is_recording,
         "recording_duration":  rec.duration_seconds,
@@ -1218,6 +1239,7 @@ def api_sensors():
         "night_vision": cam.get("night_vision", False),
         "sls_enabled": cam.get("sls_enabled", False),
         "sls_active": cam.get("sls_active", False),
+        "ghost_hunting_mode": cam.get("ghost_hunting_mode", False),
         "depth_available": cam.get("depth", False),
         "webcam_device": webcam_device,
         "webcam_present": webcam_present,

@@ -23,6 +23,9 @@
           <span class="badge bg-info text-dark d-none" id="sls-badge">
             <i class="bi bi-person-bounding-box me-1"></i>SLS
           </span>
+          <span class="badge bg-purple text-light d-none" id="ghost-badge" style="background-color:#6f42c1;">
+            <i class="bi bi-stars me-1"></i>GHOST HUNTING MODE
+          </span>
           <span class="badge bg-success blink-dot"><i class="bi bi-circle-fill me-1"></i>LIVE</span>
           <div class="btn-group btn-group-sm ms-1" role="group">
             <button type="button" id="prev-camera-btn" class="btn btn-outline-light"><i class="bi bi-chevron-left"></i></button>
@@ -158,6 +161,7 @@
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-multi-detection" class="badge bg-secondary">multi detection: ...</span></div>
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-nightvision" class="badge bg-secondary">night vision: ...</span></div>
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-sls" class="badge bg-secondary">sls: ...</span></div>
+          <div class="col-12 col-md-6 col-xl-4"><span id="sensor-ghost" class="badge bg-secondary">ghost hunting mode: ...</span></div>
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-depth" class="badge bg-secondary">depth: ...</span></div>
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-webcam" class="badge bg-secondary">webcam: ...</span></div>
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-kinect" class="badge bg-secondary">kinect usb: ...</span></div>
@@ -177,6 +181,7 @@
 (function () {
   const nvBadge = document.getElementById('nv-badge');
   const slsBadge = document.getElementById('sls-badge');
+  const ghostBadge = document.getElementById('ghost-badge');
   const image = document.getElementById('live-feed-image');
   const video = document.getElementById('live-feed-video');
   const title = document.getElementById('live-feed-title');
@@ -245,6 +250,7 @@
     multiDetection: document.getElementById('sensor-multi-detection'),
     nightvision: document.getElementById('sensor-nightvision'),
     sls: document.getElementById('sensor-sls'),
+    ghost: document.getElementById('sensor-ghost'),
     depth: document.getElementById('sensor-depth'),
     webcam: document.getElementById('sensor-webcam'),
     kinect: document.getElementById('sensor-kinect'),
@@ -361,6 +367,11 @@
         } else {
           slsBadge.classList.add('d-none');
         }
+        if (activeSourceId === 'primary' && d.ghost_hunting_mode) {
+          ghostBadge.classList.remove('d-none');
+        } else {
+          ghostBadge.classList.add('d-none');
+        }
       })
       .catch(() => {});
 
@@ -378,6 +389,7 @@
         setBadge(sensorEls.multiDetection, `multi detection: ${s.multi_camera_detection ? (s.multi_camera_sources || 0) + ' source(s)' : 'off'}`, s.multi_camera_detection);
         setBadge(sensorEls.nightvision, `night vision: ${s.night_vision ? 'on' : 'off'}`, s.night_vision);
         setBadge(sensorEls.sls, `sls: ${s.sls_active ? 'active' : (s.sls_enabled ? 'enabled' : 'off')}`, s.sls_active || s.sls_enabled);
+        setBadge(sensorEls.ghost, `ghost hunting mode: ${s.ghost_hunting_mode ? 'ON' : 'off'}`, s.ghost_hunting_mode);
         setBadge(sensorEls.depth, `depth: ${s.depth_available ? 'available' : 'not available'}`, s.depth_available);
         setBadge(sensorEls.webcam, `webcam ${s.webcam_device}: ${s.webcam_present ? 'present' : 'missing'}`, s.webcam_present);
         setBadge(sensorEls.kinect, `kinect usb: ${s.kinect_fully_powered ? 'camera+audio+motor' : 'partial/offline'}`, s.kinect_fully_powered);

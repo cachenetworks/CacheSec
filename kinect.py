@@ -180,6 +180,11 @@ class KinectSource:
     def error(self) -> str:
         return self._error
 
+    @property
+    def motor_available(self) -> bool:
+        """True if a motor/LED device handle is open (tilt/LED will work)."""
+        return self._motor_dev is not None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -196,7 +201,10 @@ class KinectSource:
 
         try:
             import config
-            motor_enabled = config.KINECT_MOTOR_ENABLED
+            from database import get_setting
+            raw = get_setting("kinect_motor_enabled",
+                               "true" if config.KINECT_MOTOR_ENABLED else "false")
+            motor_enabled = str(raw).strip().lower() in {"1", "true", "yes", "on"}
         except Exception:
             motor_enabled = False
 

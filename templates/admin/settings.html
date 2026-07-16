@@ -71,6 +71,49 @@
             </div>
           </div>
 
+          <div class="col-md-6">
+            <input type="hidden" name="kinect_motor_enabled" value="false">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="kinect_motor_enabled"
+                     name="kinect_motor_enabled" value="true"
+                     {{ 'checked' if settings.kinect_motor_enabled == 'true' else '' }}>
+              <label class="form-check-label" for="kinect_motor_enabled">
+                Kinect Motor / Tilt Control
+              </label>
+            </div>
+            <div class="form-text text-muted">
+              Off by default: the Kinect v1's motor/LED handle is a separate device
+              connection, and on some libfreenect builds opening it can block the
+              video/depth stream SLS needs. Turn this on to use the Up/Down tilt
+              buttons on the Live Feed page. If enabling it causes the Kinect feed
+              to drop or freeze, turn it back off. The Kinect motor only tilts
+              up/down — it cannot pan left/right.
+            </div>
+          </div>
+
+          <div class="col-md-6">
+            <input type="hidden" name="ghost_hunting_mode" value="false">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="ghost_hunting_mode"
+                     name="ghost_hunting_mode" value="true"
+                     {{ 'checked' if settings.ghost_hunting_mode == 'true' else '' }}>
+              <label class="form-check-label" for="ghost_hunting_mode">
+                <i class="bi bi-person-bounding-box me-1"></i>Ghost Hunting Mode (Kinect SLS)
+              </label>
+            </div>
+            <div class="form-text text-muted">
+              Keeps the Kinect in IR night-vision with the depth-based stick-figure (SLS) overlay
+              on continuously, day or night, instead of only switching on when the room is dark.
+              This is the same visual effect as the "SLS camera" used on paranormal TV shows: it
+              draws a skeleton over any person-shaped blob the depth sensor sees. It's a fun way
+              to spot movement/shapes in the dark — it is <strong>not</strong> a scientific
+              ghost, spirit, or EMF detector, and unusual sounds/objects in a room are far more
+              often drafts, pets, pipes, or settling than anything paranormal.
+              Requires a Kinect: works when Kinect is your primary camera, or as the night-vision
+              fallback source for a webcam primary camera.
+            </div>
+          </div>
+
           <input type="hidden" name="usb_camera_auto_discover" value="false">
           <input type="hidden" name="usb_camera_scan_limit" value="0">
           <input type="hidden" name="multi_camera_detection_enabled" id="multi_camera_detection_enabled"

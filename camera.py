@@ -74,6 +74,29 @@ NIGHT_VISION_HYSTERESIS  = 25   # deactivate only when > 125/255
 _CLAHE = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
 
 
+def _kinect_ambient_brightness(kinect, mode: str, frame: np.ndarray) -> float:
+    """
+    Mean brightness used to decide whether the Kinect should switch between
+    RGB (day) and IR (night) mode.
+
+    In rgb mode `frame` is the plain camera image, so its grayscale mean
+    tracks room brightness directly. In ir mode `frame` is the CLAHE +
+    unsharp-mask enhanced display image (see kinect.py's _ir_to_bgr) — that
+    processing deliberately stretches contrast to fill the full 0-255 range,
+    which flattens out its mean regardless of how bright the room actually
+    is. Measuring brightness on that enhanced frame means the "room got
+    bright again, switch back to RGB" check almost never fires, so it looks
+    stuck in night vision. Read the raw (unenhanced) IR sensor frame instead
+    — ambient light still raises it on top of the IR projector's dot
+    pattern, so it tracks real room brightness.
+    """
+    if mode == "ir":
+        raw = kinect.read_raw_ir()
+        if raw is not None:
+            return float(np.mean(raw))
+    return float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
+
+
 def get_latest_jpeg() -> bytes:
     with _latest_frame_lock:
         return _latest_jpeg
@@ -662,8 +685,8 @@ class _DetectionSourceRuntime:
             if frame is None:
                 return None
             if not _night_vision_forced_off():
-                gray_mean = float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
                 mode = self.kinect_source.get_mode()
+                gray_mean = _kinect_ambient_brightness(self.kinect_source, mode, frame)
                 if mode != "ir" and gray_mean < NIGHT_VISION_THRESHOLD:
                     self.kinect_source.set_mode("ir")
                 elif mode == "ir" and gray_mean > (NIGHT_VISION_THRESHOLD + NIGHT_VISION_HYSTERESIS):
@@ -898,6 +921,7 @@ class CameraLoop:
         _camera_status["night_vision"] = False
         _camera_status["sls_enabled"] = config.SLS_ENABLED
         _camera_status["sls_active"] = False
+        _camera_status["ghost_hunting_mode"] = False
         _camera_status["depth"] = False
 
         # ---- Open preferred source, with fallback ----
@@ -935,7 +959,14 @@ class CameraLoop:
                 logger.info("Using Kinect as camera source")
                 cap = None
 
-                if _night_vision_forced_off():
+                if _ghost_hunting_mode_enabled():
+                    logger.info("Ghost Hunting Mode enabled — starting Kinect in IR/SLS mode")
+                    _night_vision_active = True
+                    _camera_status["night_vision"] = True
+                    _camera_status["sls_active"] = True
+                    kinect.set_mode("ir")
+                    kinect.set_led(KinectLED.BLINK_GREEN)
+                elif _night_vision_forced_off():
                     _night_vision_active = False
                     _camera_status["night_vision"] = False
                     _camera_status["sls_active"] = False
@@ -993,9 +1024,9 @@ class CameraLoop:
             logger.info("Using experimental Kinect One RGB source at /dev/video%s", index)
             return cap2
 
-        def switch_to_kinect_night(gray_mean: float) -> bool:
+        def switch_to_kinect_night(gray_mean: float, force: bool = False) -> bool:
             global _night_vision_active
-            if not config.KINECT_NIGHT_VISION_ENABLED or _night_vision_forced_off():
+            if not force and (not config.KINECT_NIGHT_VISION_ENABLED or _night_vision_forced_off()):
                 return False
             logger.info("Main camera dark (brightness=%.1f) - trying Kinect IR night vision", gray_mean)
             if not start_kinect_source():
@@ -1095,9 +1126,18 @@ class CameraLoop:
 
                 frame_count += 1
 
+                ghost_mode = _ghost_hunting_mode_enabled()
+                _camera_status["ghost_hunting_mode"] = ghost_mode
+
                 # ---- Night-vision ----
                 if use_kinect:
-                    if _night_vision_forced_off():
+                    if ghost_mode:
+                        if not _night_vision_active or kinect.get_mode() != "ir":
+                            _night_vision_active = True
+                            _camera_status["night_vision"] = True
+                            kinect.set_mode("ir")
+                            kinect.set_led(KinectLED.BLINK_GREEN)
+                    elif _night_vision_forced_off():
                         if _night_vision_active or kinect.get_mode() != "rgb":
                             _night_vision_active = False
                             _camera_status["night_vision"] = False
@@ -1119,7 +1159,7 @@ class CameraLoop:
                         if kinect_settle > 0:
                             self._kinect_settle = kinect_settle - 1
                         else:
-                            gray_mean = float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
+                            gray_mean = _kinect_ambient_brightness(kinect, kinect.get_mode(), frame)
                             if not _night_vision_active and gray_mean < NIGHT_VISION_THRESHOLD:
                                 _night_vision_active = True
                                 _camera_status["night_vision"] = True
@@ -1152,8 +1192,13 @@ class CameraLoop:
                     # SLS skeleton overlay — uses Kinect depth data.
                     sls_active = bool(
                         config.SLS_ENABLED
-                        and not _night_vision_forced_off()
-                        and (_night_vision_active or config.SLS_MODE == "always")
+                        and (
+                            ghost_mode
+                            or (
+                                not _night_vision_forced_off()
+                                and (_night_vision_active or config.SLS_MODE == "always")
+                            )
+                        )
                     )
                     _camera_status["sls_active"] = sls_active
                     if sls_active:
@@ -1206,7 +1251,13 @@ class CameraLoop:
                     else:
                         # Webcam: software NV filter
                         gray_mean = float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
-                        if _night_vision_forced_off():
+                        if ghost_mode:
+                            if switch_to_kinect_night(gray_mean, force=True):
+                                use_kinect = True
+                                cap = None
+                                frame_count = 0
+                                continue
+                        elif _night_vision_forced_off():
                             if _night_vision_active:
                                 _night_vision_active = False
                                 _camera_status["night_vision"] = False
@@ -1600,6 +1651,16 @@ def _kinect_source_specs(preferred: str | None = None) -> list[_CameraSourceSpec
 def _night_vision_forced_off() -> bool:
     mode = _live_setting("night_vision_mode", config.NIGHT_VISION_MODE)
     return mode.strip().lower() == "force_off"
+
+
+def _ghost_hunting_mode_enabled() -> bool:
+    """Ghost Hunting Mode: keep the Kinect in IR + SLS skeleton view at all
+    times instead of only switching on when the room is dark. This is the
+    "SLS camera" visual effect from paranormal TV shows — a depth-based
+    stick-figure overlay on person-shaped blobs — not a scientific spirit
+    or EMF detector. Takes priority over night_vision_mode=force_off since
+    the user explicitly asked for it."""
+    return _live_bool_setting("ghost_hunting_mode", False)
 
 
 def _build_ip_onvif_controller(stream_url: str) -> OnvifNightVisionController | None:
