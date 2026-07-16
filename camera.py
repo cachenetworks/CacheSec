@@ -2626,13 +2626,17 @@ def get_snapshot_jpeg(source_id: str = "primary") -> bytes | None:
     kinect_index = _parse_kinect_source_id(source_id)
     if kinect_index is not None:
         try:
-            from kinect import get_kinect, kinect_available
+            from kinect import get_kinect
         except Exception:
             return None
-        if not kinect_available(kinect_index):
-            return None
         kinect = get_kinect(kinect_index)
-        if not kinect.available and not kinect.start():
+        # Don't call kinect.start() here — it can block for up to 4s waiting
+        # for the first frame, which is fine once for a persistent stream
+        # connection but far too slow to repeat on every few-second
+        # thumbnail poll. Only serve a frame if it's already running
+        # (as the active detection source, or from an open focus-view
+        # stream) — otherwise fail fast so the poll doesn't stack up.
+        if not kinect.available:
             return None
         return _encode_jpeg_bytes(kinect.read_frame())
 

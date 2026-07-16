@@ -304,7 +304,17 @@
   const GRID_SNAPSHOT_INTERVAL_MS = 4000;
   function refreshGridSnapshots() {
     document.querySelectorAll('.live-grid-img[data-snapshot-src]').forEach((img, i) => {
+      // A slow/unreachable camera can take several seconds to respond.
+      // Skip this tile's refresh entirely if its previous request hasn't
+      // resolved yet — otherwise the browser aborts the still-pending
+      // request the moment we reassign img.src again, which just spams
+      // NS_BINDING_ABORTED every interval instead of ever completing.
+      if (img.dataset.loading === '1') return;
       setTimeout(() => {
+        img.dataset.loading = '1';
+        const doneLoading = () => { delete img.dataset.loading; };
+        img.onload = doneLoading;
+        img.onerror = doneLoading;
         img.src = img.dataset.snapshotSrc + '?t=' + Date.now();
       }, i * 250);
     });
