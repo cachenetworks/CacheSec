@@ -164,6 +164,7 @@ class KinectSource:
         self._thread: threading.Thread | None = None
         self._ready      = False
         self._error      = ""
+        self._start_lock = threading.Lock()
         # Motor/LED dev opened separately (doesn't need full init)
         self._motor_ctx  = None
         self._motor_dev  = None
@@ -191,6 +192,20 @@ class KinectSource:
 
     def start(self) -> bool:
         """Start frame capture thread. Returns True if Kinect is available."""
+        if self._ready:
+            return True
+        if not self._start_lock.acquire(blocking=False):
+            # A start attempt is already in progress on another thread —
+            # don't race it into spawning a second capture thread against
+            # the same device. Callers that can't wait should treat this
+            # False the same as "not ready yet, try again shortly".
+            return False
+        try:
+            return self._start_locked()
+        finally:
+            self._start_lock.release()
+
+    def _start_locked(self) -> bool:
         if not _FREENECT_AVAILABLE:
             self._error = "freenect not installed"
             return False
