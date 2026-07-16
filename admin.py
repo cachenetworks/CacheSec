@@ -244,6 +244,24 @@ def live_stream(source_id: str = "primary"):
     )
 
 
+@admin_bp.route("/live/snapshot/<source_id>")
+@operator_required
+def live_snapshot(source_id: str):
+    """One still JPEG frame for a live-feed grid thumbnail.
+
+    Unlike live_stream, this does not hold a capture open — used so the
+    "All Cameras" grid polls a frame every few seconds per tile instead of
+    every tile running a continuous MJPEG stream simultaneously.
+    """
+    from camera import get_snapshot_jpeg, get_error_jpeg_bytes
+    jpeg = get_snapshot_jpeg(source_id) or get_error_jpeg_bytes()
+    return Response(
+        jpeg,
+        mimetype="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @admin_bp.route("/api/camera/control", methods=["POST"])
 @operator_required
 def api_camera_control():

@@ -1304,7 +1304,7 @@ class CameraLoop:
                     record_all_last_signal = now
 
                 # Run detection every FRAME_SKIP frames
-                if frame_count % max(1, config.FRAME_SKIP) != 0:
+                if frame_count % max(1, _live_int_setting("frame_skip", config.FRAME_SKIP)) != 0:
                     _set_latest_jpeg(display_frame)
                     continue
 
@@ -2317,12 +2317,15 @@ def generate_mjpeg(source_id: str = "primary"):
     """Generator for Flask MJPEG streaming endpoint."""
     if source_id == "primary":
         while True:
-            frame = get_latest_jpeg()
-            if frame:
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-                )
+            # Fall back to a "No feed" placeholder instead of yielding
+            # nothing — otherwise a not-yet-started/stopped camera loop
+            # just leaves the browser's <img> blank forever with no
+            # indication anything is wrong.
+            frame = get_latest_jpeg() or get_error_jpeg_bytes()
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            )
             time.sleep(0.05)  # ~20 FPS max to browser
         return
 
@@ -2543,13 +2546,122 @@ def _read_snapshot_frame(
         return None
 
 
-def _generate_error_mjpeg(single: bool = False):
+def get_error_jpeg_bytes() -> bytes:
     img = np.zeros((240, 426, 3), dtype=np.uint8)
     cv2.putText(img, "No feed", (150, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (180, 180, 180), 2)
     ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
-    payload = buf.tobytes() if ok else b""
+    return buf.tobytes() if ok else b""
+
+
+def _generate_error_mjpeg(single: bool = False):
+    payload = get_error_jpeg_bytes()
     while True:
         yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + payload + b"\r\n"
         if single:
             return
         time.sleep(1.0)
+
+
+def _capture_single_frame(source, http_options: dict | None = None) -> np.ndarray | None:
+    """
+    Open a capture just long enough to grab one frame, then release it.
+
+    Used for live-feed grid thumbnails so having N cameras on screen doesn't
+    turn into N continuous ~30fps capture+encode loops (see generate_mjpeg,
+    which is right for the single-camera focus view but far too expensive
+    to run per-tile for every camera at once) — a thumbnail only needs a
+    fresh frame every few seconds.
+    """
+    if isinstance(source, str):
+        cap = _open_stream_capture(source, "snapshot", http_options=http_options)
+    else:
+        cap = cv2.VideoCapture(source)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    if cap is None or not cap.isOpened():
+        if cap is not None:
+            cap.release()
+        return None
+    try:
+        ok, frame = cap.read()
+        return frame if ok else None
+    finally:
+        cap.release()
+
+
+def _encode_jpeg_bytes(frame: np.ndarray | None, quality: int = 70) -> bytes | None:
+    if frame is None:
+        return None
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return buf.tobytes() if ok else None
+
+
+def get_snapshot_jpeg(source_id: str = "primary") -> bytes | None:
+    """
+    Return one encoded JPEG frame for a live-feed grid thumbnail, without
+    opening a persistent capture loop for it. Mirrors generate_mjpeg's
+    source-id dispatch, but grabs a single frame per call instead of
+    streaming continuously.
+    """
+    if source_id == "primary":
+        return get_latest_jpeg() or None
+
+    setup_match = _setup_camera_for_source_id(source_id)
+    if setup_match is not None:
+        cam, _ordinal = setup_match
+        cam_type = str(cam.get("type") or "").strip().lower()
+        url = _setup_camera_stream_url(cam)
+        if cam_type == "ip":
+            options = cam.get("options") if isinstance(cam.get("options"), dict) else {}
+            if _looks_like_snapshot_url(url):
+                return _encode_jpeg_bytes(_read_snapshot_frame(url, "ip camera", http_options=dict(options)))
+            return _encode_jpeg_bytes(_capture_single_frame(url, http_options=dict(options)))
+        if cam_type == "tapo":
+            return _encode_jpeg_bytes(_capture_single_frame(url))
+
+    webcam_index = _parse_webcam_source_id(source_id)
+    if webcam_index is not None:
+        return _encode_jpeg_bytes(_capture_single_frame(webcam_index))
+
+    kinect_index = _parse_kinect_source_id(source_id)
+    if kinect_index is not None:
+        try:
+            from kinect import get_kinect, kinect_available
+        except Exception:
+            return None
+        if not kinect_available(kinect_index):
+            return None
+        kinect = get_kinect(kinect_index)
+        if not kinect.available and not kinect.start():
+            return None
+        return _encode_jpeg_bytes(kinect.read_frame())
+
+    if source_id == "tapo":
+        try:
+            from tapo_control import tapo_rtsp_url, tapo_configured
+        except Exception:
+            return None
+        if not tapo_configured():
+            return None
+        url = tapo_rtsp_url()
+        if not url:
+            return None
+        return _encode_jpeg_bytes(_capture_single_frame(url))
+
+    if source_id.startswith("ip"):
+        try:
+            idx = int(source_id[2:]) - 1
+        except ValueError:
+            idx = -1
+        sources = _configured_ip_sources()
+        if 0 <= idx < len(sources):
+            source = sources[idx]
+            if _looks_like_snapshot_url(source["url"]):
+                return _encode_jpeg_bytes(
+                    _read_snapshot_frame(source["url"], source["label"], http_options=source.get("options"))
+                )
+            return _encode_jpeg_bytes(
+                _capture_single_frame(source["url"], http_options=source.get("options"))
+            )
+
+    return None

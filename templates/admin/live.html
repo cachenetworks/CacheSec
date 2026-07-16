@@ -133,7 +133,7 @@
               <video class="img-fluid live-grid-vid" autoplay muted playsinline
                      src="{{ url_for('admin.go2rtc_proxy', subpath='api/stream.mp4') }}?src={{ source.go2rtc_stream|urlencode }}"></video>
               {% else %}
-              <img src="{{ url_for('admin.live_stream', source_id=source.id) }}"
+              <img data-snapshot-src="{{ url_for('admin.live_snapshot', source_id=source.id) }}"
                    class="img-fluid live-grid-img"
                    alt="{{ source.label }}">
               {% endif %}
@@ -294,6 +294,21 @@
   }
   const gridTiles = Array.from(document.querySelectorAll('.live-grid-tile'));
   const gridCols = Array.from(document.querySelectorAll('.live-grid-col'));
+
+  // Grid thumbnails poll a single still frame every few seconds instead of
+  // holding a continuous MJPEG stream open per tile — with several cameras
+  // configured, N simultaneous live streams just for background thumbnails
+  // was enough to spike CPU (and stall the page) on lower-powered hosts.
+  // Requests are staggered slightly so N cameras don't all hit the server
+  // in the same instant.
+  const GRID_SNAPSHOT_INTERVAL_MS = 4000;
+  function refreshGridSnapshots() {
+    document.querySelectorAll('.live-grid-img[data-snapshot-src]').forEach((img, i) => {
+      setTimeout(() => {
+        img.src = img.dataset.snapshotSrc + '?t=' + Date.now();
+      }, i * 250);
+    });
+  }
   function resetGridView() {
     gridCols.forEach((c) => {
       c.classList.remove('d-none');
@@ -410,6 +425,8 @@
 
   pollStatus();
   setInterval(pollStatus, 3000);
+  refreshGridSnapshots();
+  setInterval(refreshGridSnapshots, GRID_SNAPSHOT_INTERVAL_MS);
 })();
 </script>
 {% endblock %}
