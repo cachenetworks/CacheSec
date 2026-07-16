@@ -1245,7 +1245,11 @@ def api_sensors():
         ).stdout
         text = out.lower()
         kinect_parts["camera"] = "045e:02ae" in text
-        kinect_parts["audio"] = "045e:02ad" in text
+        # Kinect audio enumerates under different PIDs across hardware
+        # revisions — 02ad is the common Xbox 360 Kinect one, but some units
+        # (confirmed via lsusb on real hardware) report 02bb ("Kinect Audio")
+        # or the Kinect-for-Windows 02be instead.
+        kinect_parts["audio"] = any(pid in text for pid in ("045e:02ad", "045e:02bb", "045e:02be"))
         kinect_parts["motor"] = "045e:02b0" in text
     except Exception:
         pass
