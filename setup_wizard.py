@@ -120,6 +120,22 @@ def _cam_describe(cam: dict) -> str:
     return t
 
 
+def _cam_title(cam: dict, ordinal: int = 1) -> str:
+    label = (cam.get("label") or "").strip()
+    if label:
+        return label
+    t = cam.get("type", "")
+    if t == "tapo":
+        return "Tapo Camera"
+    if t == "ip":
+        return f"IP Camera {ordinal}"
+    if t == "kinect":
+        return "Kinect"
+    if t == "webcam":
+        return f"USB / Pi Camera {cam.get('index', 0)}"
+    return "Camera"
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -135,11 +151,15 @@ def wizard():
         _start_camera_loop()
         return redirect(url_for("admin.dashboard"))
 
-    cams = _load_cams() if state == "cameras" else []
+    raw_cams = _load_cams() if state == "cameras" else []
+    cams = [
+        {**c, "describe": _cam_describe(c), "title": _cam_title(c, i)}
+        for i, c in enumerate(raw_cams, start=1)
+    ]
     resp = render_template(
         "setup/wizard.html",
         step=state,
-        cams=[{**c, "describe": _cam_describe(c)} for c in cams],
+        cams=cams,
     )
     from flask import make_response
     response = make_response(resp)

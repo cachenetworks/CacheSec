@@ -6,7 +6,7 @@
 <div class="row justify-content-center">
   <div class="col-lg-8">
     <div class="card cs-card">
-      <div class="card-header cs-card-header">Detection &amp; Recognition</div>
+      <div class="card-header cs-card-header">Settings</div>
       <form method="POST">
         <div class="card-body row g-3">
 
@@ -31,13 +31,10 @@
           </div>
 
           {% set source = settings.camera_preferred_source or 'webcam' %}
-          {% set source_labels = {
-            'webcam': 'USB / Pi Camera',
-            'ip':     'IP Camera / RTSP',
-            'kinect': 'Kinect',
-            'tapo':   'TP-Link Tapo',
-          } %}
           <input type="hidden" name="camera_preferred_source" id="camera_preferred_source" value="{{ source }}">
+          <input type="hidden" name="setup_cameras" id="setup_cameras" value="{{ settings.setup_cameras or '' }}">
+          <input type="hidden" name="camera_index" id="camera_index" value="{{ settings.camera_index or '0' }}">
+          <input type="hidden" name="usb_camera_indices" id="usb_camera_indices" value="{{ settings.usb_camera_indices or '' }}">
           <input type="hidden" name="ip_camera_url"     id="ip_camera_url"     value="{{ settings.ip_camera_url or '' }}">
           <input type="hidden" name="ip_camera_urls"    id="ip_camera_urls"    value="{{ settings.ip_camera_urls or '' }}">
           <input type="hidden" name="tapo_host"         id="tapo_host"         value="{{ settings.tapo_host or '' }}">
@@ -47,30 +44,17 @@
 
           <div class="col-12">
             <label class="form-label d-flex justify-content-between align-items-center">
-              <span>Primary Detection Camera</span>
+              <span>Cameras</span>
               <button type="button" class="btn btn-sm btn-outline-light"
                       data-bs-toggle="modal" data-bs-target="#addCameraModal"
-                      data-cam-mode="primary">
-                <i class="bi bi-pencil-square me-1"></i>Change
+                      data-cam-mode="add">
+                <i class="bi bi-plus-lg me-1"></i>Add Camera
               </button>
             </label>
-            <div class="border border-secondary rounded p-3" id="primary-camera-card">
-              <div class="d-flex justify-content-between align-items-center">
-                <div>
-                  <div class="fw-semibold" id="primary-camera-label">{{ source_labels.get(source, source) }}</div>
-                  <div class="small text-muted" id="primary-camera-detail">
-                    {% if source == 'ip' %}{{ settings.ip_camera_url or 'Not configured' }}
-                    {% elif source == 'tapo' %}{{ settings.tapo_host or 'Not configured' }}
-                    {% elif source == 'webcam' %}USB / Pi Camera (auto-detected)
-                    {% elif source == 'kinect' %}Kinect v1 (USB)
-                    {% endif %}
-                  </div>
-                </div>
-                <span class="badge bg-secondary text-uppercase" id="primary-camera-kind">{{ source }}</span>
-              </div>
-            </div>
+            <div id="camera-list" class="d-flex flex-column gap-2"></div>
             <div class="form-text text-muted">
-              Saved camera changes reload the capture pipeline without restarting Docker.
+              The first camera with Detection enabled is the primary detection camera.
+              Saved camera changes reload the capture pipeline in-process without restarting Docker.
             </div>
           </div>
 
@@ -87,20 +71,53 @@
             </div>
           </div>
 
-          <input type="hidden" name="usb_camera_auto_discover" value="false">
-          <input type="hidden" name="usb_camera_scan_limit" value="0">
-
-          <div class="col-12">
-            <input type="hidden" name="multi_camera_detection_enabled" value="false">
+          <div class="col-md-6">
+            <input type="hidden" name="kinect_motor_enabled" value="false">
             <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="multi_camera_detection_enabled"
-                     name="multi_camera_detection_enabled" value="true"
-                     {{ 'checked' if settings.multi_camera_detection_enabled != 'false' else '' }}>
-              <label class="form-check-label" for="multi_camera_detection_enabled">
-                Run detection on extra USB, Kinect, and IP cameras
+              <input class="form-check-input" type="checkbox" id="kinect_motor_enabled"
+                     name="kinect_motor_enabled" value="true"
+                     {{ 'checked' if settings.kinect_motor_enabled == 'true' else '' }}>
+              <label class="form-check-label" for="kinect_motor_enabled">
+                Kinect Motor / Tilt Control
               </label>
             </div>
+            <div class="form-text text-muted">
+              Off by default: the Kinect v1's motor/LED handle is a separate device
+              connection, and on some libfreenect builds opening it can block the
+              video/depth stream SLS needs. Turn this on to use the Up/Down tilt
+              buttons on the Live Feed page. If enabling it causes the Kinect feed
+              to drop or freeze, turn it back off. The Kinect motor only tilts
+              up/down — it cannot pan left/right.
+            </div>
           </div>
+
+          <div class="col-md-6">
+            <input type="hidden" name="ghost_hunting_mode" value="false">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="ghost_hunting_mode"
+                     name="ghost_hunting_mode" value="true"
+                     {{ 'checked' if settings.ghost_hunting_mode == 'true' else '' }}>
+              <label class="form-check-label" for="ghost_hunting_mode">
+                <i class="bi bi-person-bounding-box me-1"></i>Ghost Hunting Mode (Kinect SLS)
+              </label>
+            </div>
+            <div class="form-text text-muted">
+              Keeps the Kinect in IR night-vision with the depth-based stick-figure (SLS) overlay
+              on continuously, day or night, instead of only switching on when the room is dark.
+              This is the same visual effect as the "SLS camera" used on paranormal TV shows: it
+              draws a skeleton over any person-shaped blob the depth sensor sees. It's a fun way
+              to spot movement/shapes in the dark — it is <strong>not</strong> a scientific
+              ghost, spirit, or EMF detector, and unusual sounds/objects in a room are far more
+              often drafts, pets, pipes, or settling than anything paranormal.
+              Requires a Kinect: works when Kinect is your primary camera, or as the night-vision
+              fallback source for a webcam primary camera.
+            </div>
+          </div>
+
+          <input type="hidden" name="usb_camera_auto_discover" value="false">
+          <input type="hidden" name="usb_camera_scan_limit" value="0">
+          <input type="hidden" name="multi_camera_detection_enabled" id="multi_camera_detection_enabled"
+                 value="{{ settings.multi_camera_detection_enabled or 'false' }}">
 
           <div class="col-md-4">
             <label class="form-label">Object Detector</label>
@@ -165,22 +182,6 @@
             <input type="number" step="1" min="1" max="255" name="moving_object_threshold"
                    class="form-control bg-secondary border-secondary text-light"
                    value="{{ settings.moving_object_threshold or '25' }}">
-          </div>
-
-          <div class="col-12">
-            <label class="form-label d-flex justify-content-between align-items-center">
-              <span>Live-Only Cameras</span>
-              <button type="button" class="btn btn-sm btn-outline-light"
-                      data-bs-toggle="modal" data-bs-target="#addCameraModal"
-                      data-cam-mode="extra">
-                <i class="bi bi-plus-lg me-1"></i>Add Camera
-              </button>
-            </label>
-            <div id="extra-cameras-list" class="d-flex flex-column gap-2"></div>
-            <div class="form-text text-muted">
-              Live-view feeds shown alongside the primary camera. Supports RTSP, HLS .m3u8,
-              MJPEG/HTTP video, and periodic snapshot URLs.
-            </div>
           </div>
 
           <div class="col-md-6">
@@ -449,17 +450,26 @@
             <input type="radio" class="btn-check" name="cam_type" id="cam-type-ip" value="ip" autocomplete="off">
             <label class="btn btn-outline-light" for="cam-type-ip"><i class="bi bi-router me-1"></i>IP / RTSP</label>
             <input type="radio" class="btn-check" name="cam_type" id="cam-type-kinect" value="kinect" autocomplete="off">
-            <label class="btn btn-outline-light" for="cam-type-kinect"><i class="bi bi-badge-3d me-1"></i>Kinect</label>
+            <label class="btn btn-outline-light" for="cam-type-kinect"><i class="bi bi-badge-3d me-1"></i>Kinect (v1/One)</label>
             <input type="radio" class="btn-check" name="cam_type" id="cam-type-tapo" value="tapo" autocomplete="off">
             <label class="btn btn-outline-light" for="cam-type-tapo"><i class="bi bi-camera-reels me-1"></i>Tapo</label>
           </div>
         </div>
 
-        <!-- Webcam fields (none — auto-detected) -->
+        <div class="mb-3">
+          <label class="form-label">Friendly name</label>
+          <input type="text" id="cam-label"
+                 class="form-control bg-secondary border-secondary text-light"
+                 placeholder="Front door">
+        </div>
+
+        <!-- Webcam fields -->
         <div class="cam-fields" data-cam-type="webcam">
-          <div class="alert alert-secondary small mb-0">
-            Uses the first detected USB / Pi camera (<code>/dev/video0</code> by default).
-            Configure <code>CAMERA_INDEX</code> in <code>.env</code> to pick a different device.
+          <div class="mb-3">
+            <label class="form-label">Device index</label>
+            <input type="number" id="cam-webcam-index" min="0" max="63" value="0"
+                   class="form-control bg-secondary border-secondary text-light">
+            <div class="form-text text-muted">Maps to <code>/dev/videoN</code> inside the container.</div>
           </div>
         </div>
 
@@ -473,13 +483,6 @@
 
         <!-- IP / RTSP fields -->
         <div class="cam-fields d-none" data-cam-type="ip">
-          <div class="mb-3">
-            <label class="form-label">Friendly name</label>
-            <input type="text" id="cam-ip-name"
-                   class="form-control bg-secondary border-secondary text-light"
-                   placeholder="Front Door">
-            <div class="form-text text-muted ip-extra-only d-none">Shown above the live preview.</div>
-          </div>
           <div class="mb-3">
             <label class="form-label">Stream URL</label>
             <input type="url" id="cam-ip-url"
@@ -561,14 +564,82 @@ document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
     tapo:   'TP-Link Tapo',
   };
 
-  // ---- Extra cameras list (parsed from hidden ip_camera_urls) ----
-  const extraInput = document.getElementById('ip_camera_urls');
-  const listEl = document.getElementById('extra-cameras-list');
-  let extras = parseExtras(extraInput.value || '');
+  const setupInput = document.getElementById('setup_cameras');
+  const listEl = document.getElementById('camera-list');
+  const primarySourceInput = document.getElementById('camera_preferred_source');
+  const cameraIndexInput = document.getElementById('camera_index');
+  const usbIndicesInput = document.getElementById('usb_camera_indices');
+  const primaryIpInput = document.getElementById('ip_camera_url');
+  const extraIpInput = document.getElementById('ip_camera_urls');
+  const multiDetectionInput = document.getElementById('multi_camera_detection_enabled');
+  const tapoHostInput = document.getElementById('tapo_host');
+  const tapoUserInput = document.getElementById('tapo_username');
+  const tapoPasswordInput = document.getElementById('tapo_password');
+  const tapoStreamInput = document.getElementById('tapo_stream');
+  const transportInput = document.querySelector('select[name="ip_camera_rtsp_transport"]');
+
+  let cameras = loadInitialCameras();
+
+  function loadInitialCameras() {
+    let parsed = [];
+    try {
+      parsed = JSON.parse(setupInput.value || '[]');
+    } catch (_) {
+      parsed = [];
+    }
+    if (Array.isArray(parsed) && parsed.length) return parsed.map(normalizeCamera).filter(Boolean);
+
+    const migrated = [];
+    const source = (primarySourceInput.value || '').trim().toLowerCase();
+    if (source && source !== 'none') {
+      if (source === 'webcam') {
+        migrated.push({
+          id: newId(), type: 'webcam', label: 'USB / Pi Camera',
+          index: parseNonNegative(cameraIndexInput.value, 0), detection: true,
+        });
+      } else if (source === 'ip' && primaryIpInput.value.trim()) {
+        migrated.push({
+          id: newId(), type: 'ip', label: 'IP Camera',
+          url: primaryIpInput.value.trim(),
+          transport: transportInput?.value || 'tcp',
+          options: {}, detection: true,
+        });
+      } else if (source === 'tapo' && tapoHostInput.value.trim()) {
+        migrated.push({
+          id: newId(), type: 'tapo', label: 'Tapo Camera',
+          host: tapoHostInput.value.trim(),
+          username: tapoUserInput.value.trim() || 'admin',
+          password: tapoPasswordInput.value,
+          stream: tapoStreamInput.value || 'stream1',
+          detection: true,
+        });
+      } else if (source === 'kinect') {
+        migrated.push({ id: newId(), type: 'kinect', label: 'Kinect', detection: true });
+      }
+    }
+
+    parseLegacyExtras(extraIpInput.value || '').forEach((item) => {
+      migrated.push({
+        id: newId(), type: 'ip', label: item.label,
+        url: item.url, options: item.options || {},
+        transport: transportInput?.value || 'tcp', detection: false,
+      });
+    });
+
+    (usbIndicesInput.value || '').split(/[,\n]/).forEach((raw) => {
+      const text = raw.trim();
+      if (!text) return;
+      migrated.push({
+        id: newId(), type: 'webcam', label: `USB / Pi Camera ${text}`,
+        index: parseNonNegative(text, 0), detection: false,
+      });
+    });
+    return migrated.map(normalizeCamera).filter(Boolean);
+  }
 
   function parseExtras(raw) {
     const out = [];
-    raw.replace(/,/g, '\n').split('\n').forEach((line) => {
+    raw.split('\n').forEach((line) => {
       const item = line.trim();
       if (!item || item.startsWith('#')) return;
       const parts = item.split('|').map(s => s.trim()).filter(Boolean);
@@ -579,7 +650,11 @@ document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
       const looksLikeUrl = (s) => /^[a-z]+:\/\//i.test(s) || /^[\w.-]+\.[\w.-]+/.test(s);
       let mainEnd = parts.length;
       for (let i = 0; i < parts.length; i++) {
-        if (parts[i].includes('=')) { mainEnd = i; break; }
+        const token = parts[i];
+        const isUrlToken = /^[a-z]+:\/\//i.test(token) || /^[\w.-]+\.[\w.-]+/.test(token);
+        // URLs often include querystring "="; only split options on non-URL
+        // key=value segments.
+        if (token.includes('=') && !isUrlToken) { mainEnd = i; break; }
       }
       const main = parts.slice(0, mainEnd);
       const optParts = parts.slice(mainEnd);
@@ -602,44 +677,79 @@ document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
     return out;
   }
 
-  function serializeExtras(items) {
-    return items.map((it) => {
-      const parts = [];
-      if (it.label) parts.push(it.label);
-      parts.push(it.url);
-      ['referer', 'origin', 'user_agent'].forEach((k) => {
-        if (it.options && it.options[k]) parts.push(`${k}=${it.options[k]}`);
-      });
-      return parts.join('|');
-    }).join('\n');
+  function parseLegacyExtras(raw) {
+    return parseExtras(raw);
   }
 
-  function renderExtras() {
+  function normalizeCamera(cam) {
+    if (!cam || !SOURCE_LABELS[cam.type]) return null;
+    const out = {
+      id: String(cam.id || newId()).slice(0, 32),
+      type: cam.type,
+      label: String(cam.label || '').trim(),
+      detection: Boolean(cam.detection),
+    };
+    if (out.type === 'webcam') {
+      out.index = parseNonNegative(cam.index, 0);
+    } else if (out.type === 'ip') {
+      out.url = String(cam.url || '').trim();
+      if (!out.url) return null;
+      out.transport = ['tcp', 'udp', 'udp_multicast', 'http'].includes(cam.transport)
+        ? cam.transport : (transportInput?.value || 'tcp');
+      out.options = cleanOptions(cam.options || {});
+    } else if (out.type === 'tapo') {
+      out.host = String(cam.host || '').trim();
+      out.username = String(cam.username || 'admin').trim() || 'admin';
+      out.password = String(cam.password || '');
+      out.stream = ['stream1', 'stream2'].includes(cam.stream) ? cam.stream : 'stream1';
+      if (!out.host || !out.password) return null;
+    }
+    return out;
+  }
+
+  function cleanOptions(options) {
+    const out = {};
+    ['referer', 'origin', 'user_agent'].forEach((key) => {
+      const val = String(options[key] || '').trim();
+      if (val) out[key] = val;
+    });
+    return out;
+  }
+
+  function renderCameras() {
     listEl.innerHTML = '';
-    if (!extras.length) {
-      listEl.innerHTML = '<div class="text-muted small fst-italic">No live-only cameras yet.</div>';
-      extraInput.value = '';
+    if (!cameras.length) {
+      listEl.innerHTML = '<div class="text-muted small fst-italic">No cameras configured.</div>';
+      syncHiddenFields();
       return;
     }
-    extras.forEach((it, idx) => {
+    const primaryIdx = cameras.findIndex((cam) => cam.detection);
+    cameras.forEach((cam, idx) => {
       const row = document.createElement('div');
       row.className = 'border border-secondary rounded p-2 d-flex justify-content-between align-items-center';
+      const title = cam.label || defaultLabel(cam, idx);
+      const primaryBadge = idx === primaryIdx
+        ? '<span class="badge bg-danger ms-1">Primary</span>' : '';
       row.innerHTML = `
         <div class="flex-grow-1 me-2 text-truncate">
-          <div class="fw-semibold">${escapeHtml(it.label || 'IP Camera ' + (idx + 1))}</div>
-          <div class="small text-muted text-truncate">${escapeHtml(redact(it.url))}</div>
+          <div class="fw-semibold">${escapeHtml(title)} ${primaryBadge}</div>
+          <div class="small text-muted text-truncate">${escapeHtml(cameraDetail(cam))}</div>
         </div>
-        <div class="btn-group btn-group-sm">
-          <button type="button" class="btn btn-outline-light cam-edit" data-idx="${idx}">
+        <div class="d-flex align-items-center gap-2">
+          <div class="form-check form-switch m-0" title="Enable detection">
+            <input class="form-check-input cam-detection" type="checkbox"
+                   data-idx="${idx}" ${cam.detection ? 'checked' : ''}>
+          </div>
+          <button type="button" class="btn btn-sm btn-outline-light cam-edit" data-idx="${idx}" title="Edit">
             <i class="bi bi-pencil"></i>
           </button>
-          <button type="button" class="btn btn-outline-danger cam-remove" data-idx="${idx}">
+          <button type="button" class="btn btn-sm btn-outline-danger cam-remove" data-idx="${idx}" title="Remove">
             <i class="bi bi-trash"></i>
           </button>
         </div>`;
       listEl.appendChild(row);
     });
-    extraInput.value = serializeExtras(extras);
+    syncHiddenFields();
   }
 
   function escapeHtml(s) {
@@ -660,6 +770,82 @@ document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
     }
   }
 
+  function defaultLabel(cam, idx) {
+    if (cam.type === 'ip') return `IP Camera ${idx + 1}`;
+    if (cam.type === 'webcam') return `USB / Pi Camera ${cam.index || 0}`;
+    if (cam.type === 'tapo') return 'Tapo Camera';
+    if (cam.type === 'kinect') return 'Kinect';
+    return `Camera ${idx + 1}`;
+  }
+
+  function cameraDetail(cam) {
+    if (cam.type === 'ip') return redact(cam.url || '');
+    if (cam.type === 'webcam') return `/dev/video${cam.index || 0}`;
+    if (cam.type === 'tapo') return `${cam.host || 'Tapo'} (${cam.stream || 'stream1'})`;
+    if (cam.type === 'kinect') return 'Kinect v1';
+    return cam.type;
+  }
+
+  function syncHiddenFields() {
+    cameras = cameras.map(normalizeCamera).filter(Boolean);
+    setupInput.value = JSON.stringify(cameras);
+    const detectionCams = cameras.filter((cam) => cam.detection);
+    const primary = detectionCams[0] || null;
+    multiDetectionInput.value = detectionCams.length > 1 ? 'true' : 'false';
+
+    primarySourceInput.value = primary ? primary.type : 'none';
+    primaryIpInput.value = primary && primary.type === 'ip' ? primary.url : '';
+    if (primary && primary.type === 'webcam') cameraIndexInput.value = String(primary.index || 0);
+    if (primary && primary.type === 'ip' && transportInput) {
+      transportInput.value = primary.transport || 'tcp';
+    }
+    if (primary && primary.type === 'tapo') {
+      tapoHostInput.value = primary.host || '';
+      tapoUserInput.value = primary.username || 'admin';
+      tapoPasswordInput.value = primary.password || '';
+      tapoStreamInput.value = primary.stream || 'stream1';
+    }
+
+    const extraLines = [];
+    const usbIndices = [];
+    cameras.forEach((cam) => {
+      if (cam === primary) return;
+      if (cam.type === 'webcam') {
+        usbIndices.push(String(cam.index || 0));
+      } else if (cam.type === 'ip') {
+        extraLines.push(serializeIpCamera(cam));
+      } else if (cam.type === 'tapo') {
+        const url = `rtsp://${encodeURIComponent(cam.username || 'admin')}:${encodeURIComponent(cam.password || '')}@${cam.host}:554/${cam.stream || 'stream1'}`;
+        extraLines.push(cam.label ? `${cam.label}|${url}` : url);
+      }
+    });
+    extraIpInput.value = extraLines.join('\n');
+    usbIndicesInput.value = usbIndices.join(',');
+  }
+
+  function serializeIpCamera(cam) {
+    const parts = [];
+    if (cam.label) parts.push(cam.label);
+    parts.push(cam.url);
+    const options = cam.options || {};
+    ['referer', 'origin', 'user_agent'].forEach((key) => {
+      if (options[key]) parts.push(`${key}=${options[key]}`);
+    });
+    return parts.join('|');
+  }
+
+  function parseNonNegative(value, fallback) {
+    const parsed = parseInt(String(value ?? '').trim(), 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  }
+
+  function newId() {
+    if (window.crypto && crypto.randomUUID) {
+      return crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+    }
+    return Math.random().toString(16).slice(2, 10).padEnd(8, '0');
+  }
+
   // ---- Modal logic ----
   const modal = document.getElementById('addCameraModal');
   const modalTitle = document.getElementById('addCameraModalTitle');
@@ -667,7 +853,6 @@ document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
   const camEditIndex = document.getElementById('cam-edit-index');
   const typeRadios = modal.querySelectorAll('input[name="cam_type"]');
   const fieldGroups = modal.querySelectorAll('.cam-fields');
-  const ipExtraOnly = modal.querySelectorAll('.ip-extra-only');
 
   function showFieldsForType(t) {
     fieldGroups.forEach(g => g.classList.toggle('d-none', g.dataset.camType !== t));
@@ -677,127 +862,101 @@ document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
 
   modal.addEventListener('show.bs.modal', (ev) => {
     const trigger = ev.relatedTarget;
-    const mode = trigger?.dataset?.camMode || 'primary';
+    const mode = trigger?.dataset?.camMode || 'add';
     camMode.value = mode;
     const editIdx = parseInt(trigger?.dataset?.editIndex ?? '-1', 10);
     camEditIndex.value = String(editIdx);
-    modalTitle.textContent = mode === 'primary'
-      ? 'Change Primary Camera'
-      : (editIdx >= 0 ? 'Edit Live-Only Camera' : 'Add Live-Only Camera');
+    modalTitle.textContent = editIdx >= 0 ? 'Edit Camera' : 'Add Camera';
 
-    // Limit type choices: extras only support ip
-    const onlyIp = mode === 'extra';
-    typeRadios.forEach((r) => {
-      const lbl = modal.querySelector(`label[for="${r.id}"]`);
-      const allowed = !onlyIp || r.value === 'ip';
-      r.disabled = !allowed;
-      if (lbl) lbl.classList.toggle('d-none', !allowed);
-    });
-    ipExtraOnly.forEach(el => el.classList.toggle('d-none', !onlyIp));
-
-    // Pre-fill
-    if (mode === 'primary') {
-      const current = document.getElementById('camera_preferred_source').value || 'webcam';
-      const radio = modal.querySelector(`input[name="cam_type"][value="${current}"]`);
-      if (radio) radio.checked = true;
-      showFieldsForType(current);
-      modal.querySelector('#cam-ip-url').value = document.getElementById('ip_camera_url').value;
-      modal.querySelector('#cam-ip-name').value = '';
-      modal.querySelector('#cam-tapo-host').value = document.getElementById('tapo_host').value;
-      modal.querySelector('#cam-tapo-username').value = document.getElementById('tapo_username').value || 'admin';
-      modal.querySelector('#cam-tapo-password').value = document.getElementById('tapo_password').value;
-      modal.querySelector('#cam-tapo-stream').value = document.getElementById('tapo_stream').value || 'stream1';
-    } else {
-      const ipRadio = modal.querySelector('input[name="cam_type"][value="ip"]');
-      if (ipRadio) ipRadio.checked = true;
-      showFieldsForType('ip');
-      if (editIdx >= 0 && extras[editIdx]) {
-        const it = extras[editIdx];
-        modal.querySelector('#cam-ip-name').value = it.label || '';
-        modal.querySelector('#cam-ip-url').value = it.url || '';
-        modal.querySelector('#cam-ip-referer').value = (it.options && it.options.referer) || '';
-        modal.querySelector('#cam-ip-origin').value = (it.options && it.options.origin) || '';
-      } else {
-        modal.querySelector('#cam-ip-name').value = '';
-        modal.querySelector('#cam-ip-url').value = '';
-        modal.querySelector('#cam-ip-referer').value = '';
-        modal.querySelector('#cam-ip-origin').value = '';
-      }
-    }
+    const cam = editIdx >= 0 ? cameras[editIdx] : null;
+    const type = cam?.type || 'webcam';
+    const radio = modal.querySelector(`input[name="cam_type"][value="${type}"]`);
+    if (radio) radio.checked = true;
+    showFieldsForType(type);
+    modal.querySelector('#cam-label').value = cam?.label || '';
+    modal.querySelector('#cam-webcam-index').value = cam?.index ?? 0;
+    modal.querySelector('#cam-ip-url').value = cam?.url || '';
+    modal.querySelector('#cam-ip-referer').value = (cam?.options && cam.options.referer) || '';
+    modal.querySelector('#cam-ip-origin').value = (cam?.options && cam.options.origin) || '';
+    modal.querySelector('#cam-tapo-host').value = cam?.host || '';
+    modal.querySelector('#cam-tapo-username').value = cam?.username || 'admin';
+    modal.querySelector('#cam-tapo-password').value = cam?.password || '';
+    modal.querySelector('#cam-tapo-stream').value = cam?.stream || 'stream1';
   });
 
-  // Save
-  document.getElementById('cam-modal-save').addEventListener('click', () => {
+  function cameraFromModal(existing) {
     const type = (modal.querySelector('input[name="cam_type"]:checked') || {}).value || 'webcam';
-    const mode = camMode.value;
-    if (mode === 'primary') {
-      document.getElementById('camera_preferred_source').value = type;
-      let detail = '';
-      if (type === 'ip') {
-        const url = modal.querySelector('#cam-ip-url').value.trim();
-        document.getElementById('ip_camera_url').value = url;
-        detail = url || 'Not configured';
-      } else if (type === 'tapo') {
-        const host = modal.querySelector('#cam-tapo-host').value.trim();
-        document.getElementById('tapo_host').value = host;
-        document.getElementById('tapo_username').value =
-          modal.querySelector('#cam-tapo-username').value.trim() || 'admin';
-        document.getElementById('tapo_password').value =
-          modal.querySelector('#cam-tapo-password').value;
-        document.getElementById('tapo_stream').value =
-          modal.querySelector('#cam-tapo-stream').value || 'stream1';
-        detail = host || 'Not configured';
-      } else if (type === 'webcam') {
-        detail = 'USB / Pi Camera (auto-detected)';
-      } else if (type === 'kinect') {
-        detail = 'Kinect v1 (USB)';
-      }
-      document.getElementById('primary-camera-label').textContent = SOURCE_LABELS[type] || type;
-      document.getElementById('primary-camera-detail').textContent = detail;
-      document.getElementById('primary-camera-kind').textContent = type;
-    } else {
-      const url = modal.querySelector('#cam-ip-url').value.trim();
-      if (!url) { alert('Stream URL is required.'); return; }
-      const item = {
-        label: modal.querySelector('#cam-ip-name').value.trim(),
-        url,
-        options: {},
-      };
+    const item = {
+      id: existing?.id || newId(),
+      type,
+      label: modal.querySelector('#cam-label').value.trim(),
+      detection: Boolean(existing?.detection),
+    };
+    if (type === 'webcam') {
+      item.index = parseNonNegative(modal.querySelector('#cam-webcam-index').value, 0);
+    } else if (type === 'ip') {
+      item.url = modal.querySelector('#cam-ip-url').value.trim();
+      if (!item.url) { alert('Stream URL is required.'); return null; }
+      item.transport = transportInput?.value || 'tcp';
+      item.options = {};
       const ref = modal.querySelector('#cam-ip-referer').value.trim();
       const org = modal.querySelector('#cam-ip-origin').value.trim();
       if (ref) item.options.referer = ref;
       if (org) item.options.origin = org;
-      const idx = parseInt(camEditIndex.value, 10);
-      if (idx >= 0 && extras[idx]) extras[idx] = item;
-      else extras.push(item);
-      renderExtras();
+    } else if (type === 'tapo') {
+      item.host = modal.querySelector('#cam-tapo-host').value.trim();
+      item.username = modal.querySelector('#cam-tapo-username').value.trim() || 'admin';
+      item.password = modal.querySelector('#cam-tapo-password').value;
+      item.stream = modal.querySelector('#cam-tapo-stream').value || 'stream1';
+      if (!item.host || !item.password) { alert('Tapo host and password are required.'); return null; }
     }
+    return normalizeCamera(item);
+  }
+
+  document.getElementById('cam-modal-save').addEventListener('click', () => {
+    const idx = parseInt(camEditIndex.value, 10);
+    const item = cameraFromModal(idx >= 0 ? cameras[idx] : null);
+    if (!item) return;
+    if (idx >= 0 && cameras[idx]) {
+      cameras[idx] = item;
+    } else {
+      cameras.push(item);
+    }
+    renderCameras();
     bootstrap.Modal.getInstance(modal).hide();
   });
 
   listEl.addEventListener('click', (ev) => {
     const editBtn = ev.target.closest('.cam-edit');
     const removeBtn = ev.target.closest('.cam-remove');
+    const detectionToggle = ev.target.closest('.cam-detection');
+    if (detectionToggle) {
+      const idx = parseInt(detectionToggle.dataset.idx, 10);
+      if (cameras[idx]) {
+        cameras[idx].detection = detectionToggle.checked;
+        renderCameras();
+      }
+      return;
+    }
     if (editBtn) {
       const idx = parseInt(editBtn.dataset.idx, 10);
       const m = bootstrap.Modal.getOrCreateInstance(modal);
-      // synthesise the trigger dataset
-      modal.dataset._camMode = 'extra';
       const fakeTrigger = document.createElement('button');
-      fakeTrigger.dataset.camMode = 'extra';
+      fakeTrigger.dataset.camMode = 'edit';
       fakeTrigger.dataset.editIndex = String(idx);
-      // bootstrap doesn't pass relatedTarget on programmatic show, so dispatch manually
       m.show(fakeTrigger);
     } else if (removeBtn) {
       const idx = parseInt(removeBtn.dataset.idx, 10);
       if (idx >= 0) {
-        extras.splice(idx, 1);
-        renderExtras();
+        cameras.splice(idx, 1);
+        renderCameras();
       }
     }
   });
 
-  renderExtras();
+  const settingsForm = document.querySelector('form[method="POST"]');
+  if (settingsForm) settingsForm.addEventListener('submit', syncHiddenFields);
+  renderCameras();
 })();
 </script>
 {% endblock %}

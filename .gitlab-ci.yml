@@ -1,0 +1,125 @@
+# =============================================================================
+# CacheSec — GitLab CI build pipeline
+#
+# Builds the multi-variant container images (same matrix as the GitHub
+# workflow) and pushes them to a container registry using docker buildx for
+# multi-arch (amd64 / arm64) support.
+#
+# ---------------------------------------------------------------------------
+# RUNNER REQUIREMENTS
+#   - A runner with the `docker` executor and Docker-in-Docker (dind), running
+#     in PRIVILEGED mode (needed to register QEMU/binfmt for cross-arch builds).
+#   - On self-hosted runners set `privileged = true` in the runner config.toml.
+#
+# REGISTRY / CREDENTIALS (CI/CD > Settings > Variables)
+#   By default this pushes to the GitLab Container Registry of THIS project,
+#   using the built-in $CI_REGISTRY* variables (no setup needed).
+#
+#   To push elsewhere (Gitea, Harbor, GHCR, Docker Hub, ...) override these
+#   CI/CD variables instead:
+#     IMAGE             full image path, e.g. registry.example.com/you/cachesec
+#     REGISTRY_HOST     registry hostname, e.g. registry.example.com
+#     REGISTRY_USER     username
+#     REGISTRY_PASSWORD password / token  (mark as "Masked", and "Protected")
+# =============================================================================
+
+stages:
+  - build
+
+variables:
+  # Built-in GitLab registry defaults — override in CI/CD variables to retarget.
+  IMAGE: "$CI_REGISTRY_IMAGE"
+  REGISTRY_HOST: "$CI_REGISTRY"
+  REGISTRY_USER: "$CI_REGISTRY_USER"
+  REGISTRY_PASSWORD: "$CI_REGISTRY_PASSWORD"
+  # dind / TLS
+  DOCKER_HOST: "tcp://docker:2376"
+  DOCKER_TLS_CERTDIR: "/certs"
+  DOCKER_TLS_VERIFY: "1"
+  DOCKER_CERT_PATH: "/certs/client"
+
+.build_template: &build_template
+  stage: build
+  image: docker:27-cli
+  services:
+    - docker:27-dind
+  before_script:
+    - docker info
+    - echo "$REGISTRY_PASSWORD" | docker login -u "$REGISTRY_USER" --password-stdin "$REGISTRY_HOST"
+    # Register QEMU emulators so we can build arm64 on an amd64 runner.
+    - docker run --rm --privileged tonistiigi/binfmt --install all
+    # The docker-container buildx driver cannot load the dind TLS certs from
+    # the environment directly, so snapshot the current env into a named
+    # docker context and build the builder against that context instead.
+    - docker context create cachesec-ctx
+    - docker buildx create --use --name cachesec --driver docker-container cachesec-ctx
+    - docker buildx inspect --bootstrap
+  script:
+    - |
+      set -eu
+      # Assemble the tag list: per-variant base tags + version tags on git tags.
+      FINAL_TAGS="$BASE_TAGS"
+      if [ -n "${CI_COMMIT_TAG:-}" ]; then
+        FINAL_TAGS="$FINAL_TAGS ${VARIANT}-${CI_COMMIT_TAG}"
+        # The cpu image owns the bare version tag (it is the "default" image).
+        if [ "$VARIANT" = "cpu" ]; then
+          FINAL_TAGS="$FINAL_TAGS ${CI_COMMIT_TAG}"
+        fi
+      fi
+      TAG_ARGS=""
+      for t in $FINAL_TAGS; do
+        TAG_ARGS="$TAG_ARGS -t ${IMAGE}:${t}"
+      done
+      echo "Building variant '$VARIANT' for [$PLATFORMS] with tags:$FINAL_TAGS"
+      docker buildx build \
+        --platform "$PLATFORMS" \
+        --file Dockerfile \
+        --build-arg INSTALL_KINECT="$INSTALL_KINECT" \
+        --build-arg INSTALL_KINECT2="$INSTALL_KINECT2" \
+        --build-arg INSTALL_DETECTRON2="$INSTALL_DETECTRON2" \
+        --build-arg TORCH_INDEX_URL="$TORCH_INDEX_URL" \
+        $TAG_ARGS \
+        --push \
+        .
+  rules:
+    # Build on the default branch and on version tags (v*). Never on forks/MRs
+    # (no registry credentials there).
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_TAG =~ /^v/'
+
+build:
+  <<: *build_template
+  parallel:
+    matrix:
+      # Every variant bundles the full feature set (Kinect v1 + Kinect v2 +
+      # Detectron2) — variants only differ by platform/GPU target now, not
+      # by which features are compiled in. Pi skips Detectron2: no GPU and
+      # CPU-only inference on Pi hardware isn't practically usable.
+      - VARIANT: cpu
+        INSTALL_KINECT: "true"
+        INSTALL_KINECT2: "true"
+        INSTALL_DETECTRON2: "true"
+        TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
+        PLATFORMS: "linux/amd64,linux/arm64"
+        BASE_TAGS: "cpu latest"
+      - VARIANT: pi
+        INSTALL_KINECT: "true"
+        INSTALL_KINECT2: "true"
+        INSTALL_DETECTRON2: "false"
+        TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
+        PLATFORMS: "linux/arm64"
+        BASE_TAGS: "pi"
+      - VARIANT: cuda11
+        INSTALL_KINECT: "true"
+        INSTALL_KINECT2: "true"
+        INSTALL_DETECTRON2: "true"
+        TORCH_INDEX_URL: "https://download.pytorch.org/whl/cu118"
+        PLATFORMS: "linux/amd64"
+        BASE_TAGS: "cuda11"
+      - VARIANT: cuda12
+        INSTALL_KINECT: "true"
+        INSTALL_KINECT2: "true"
+        INSTALL_DETECTRON2: "true"
+        TORCH_INDEX_URL: "https://download.pytorch.org/whl/cu121"
+        PLATFORMS: "linux/amd64"
+        BASE_TAGS: "cuda12"

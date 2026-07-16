@@ -104,6 +104,16 @@ def create_app() -> Flask:
             response.headers["Strict-Transport-Security"] = (
                 "max-age=31536000; includeSubDomains"
             )
+        # Disable browser caching for static assets so UI/JS updates are always
+        # visible without hard refresh after deployments or settings changes.
+        try:
+            from flask import request as _request
+            if (_request.path or "").startswith("/static/"):
+                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+        except Exception:
+            pass
         return response
 
     # -----------------------------------------------------------------------

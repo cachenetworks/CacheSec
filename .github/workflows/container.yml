@@ -21,30 +21,45 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - variant: main
-            install_kinect: "false"
-            install_detectron2: "false"
+          # Every variant bundles the full feature set (Kinect v1 + Kinect v2 +
+          # Detectron2) — variants only differ by platform/GPU target now, not
+          # by which features are compiled in. Pi skips Detectron2: no GPU and
+          # CPU-only inference on Pi hardware isn't practically usable.
+          - variant: cpu
+            install_kinect: "true"
+            install_kinect2: "true"
+            install_detectron2: "true"
             torch_index_url: "https://download.pytorch.org/whl/cpu"
             platforms: linux/amd64,linux/arm64
             metadata_tags: |
-              type=raw,value=main
+              type=raw,value=cpu
               type=raw,value=latest,enable={{is_default_branch}}
               type=ref,event=tag
               type=ref,event=pr
-          - variant: kinect
+          - variant: pi
             install_kinect: "true"
+            install_kinect2: "true"
             install_detectron2: "false"
             torch_index_url: "https://download.pytorch.org/whl/cpu"
-            platforms: linux/amd64,linux/arm64
+            platforms: linux/arm64
             metadata_tags: |
-              type=raw,value=kinect
-          - variant: detectron2
-            install_kinect: "false"
+              type=raw,value=pi
+          - variant: cuda11
+            install_kinect: "true"
+            install_kinect2: "true"
             install_detectron2: "true"
-            torch_index_url: "https://download.pytorch.org/whl/cpu"
+            torch_index_url: "https://download.pytorch.org/whl/cu118"
             platforms: linux/amd64
             metadata_tags: |
-              type=raw,value=detectron2
+              type=raw,value=cuda11
+          - variant: cuda12
+            install_kinect: "true"
+            install_kinect2: "true"
+            install_detectron2: "true"
+            torch_index_url: "https://download.pytorch.org/whl/cu121"
+            platforms: linux/amd64
+            metadata_tags: |
+              type=raw,value=cuda12
     permissions:
       contents: read
       packages: write
@@ -82,6 +97,7 @@ jobs:
           platforms: ${{ matrix.platforms }}
           build-args: |
             INSTALL_KINECT=${{ matrix.install_kinect }}
+            INSTALL_KINECT2=${{ matrix.install_kinect2 }}
             INSTALL_DETECTRON2=${{ matrix.install_detectron2 }}
             TORCH_INDEX_URL=${{ matrix.torch_index_url }}
           push: ${{ github.event_name != 'pull_request' }}

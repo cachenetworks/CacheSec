@@ -90,6 +90,7 @@ class Recorder:
         self._avi_fps           = 15.0
         self._first_frame_time  = 0.0
         self._last_frame_time   = 0.0
+        self._continuous_recording = False
         self._source_id         = "primary"
         self._source_label      = "Primary Detection Feed"
 
@@ -111,6 +112,9 @@ class Recorder:
 
     def signal_unknown_gone(self, source_id: str = "primary") -> None:
         self._cmd_q.put(("gone", None, source_id, "", ""))
+
+    def stop_continuous_recording(self, source_id: str = "primary") -> None:
+        self._cmd_q.put(("stop_continuous", None, source_id, "", ""))
 
     def push_frame(self, frame: np.ndarray, source_id: str = "primary") -> None:
         try:
@@ -181,6 +185,12 @@ class Recorder:
                 elif cmd == "gone":
                     if self._source_id == source_id:
                         unknown_visible = False
+
+                elif cmd == "stop_continuous":
+                    if self._is_recording and self._source_id == source_id and self._continuous_recording:
+                        unknown_visible = False
+                        logger.info("Continuous recording disabled - finalising current clip")
+                        self._finalise_recording()
 
                 elif cmd == "stop":
                     return
@@ -306,6 +316,7 @@ class Recorder:
             self._avi_fps           = fps
             self._first_frame_time  = 0.0
             self._last_frame_time   = 0.0
+            self._continuous_recording = event_id is None
             self._source_id         = source_id
             self._source_label      = source_label
 
@@ -357,6 +368,7 @@ class Recorder:
             self._frame_count   = 0
             self._first_frame_time = 0.0
             self._last_frame_time = 0.0
+            self._continuous_recording = False
             self._source_id     = "primary"
             self._source_label  = "Primary Detection Feed"
 
@@ -375,6 +387,12 @@ class Recorder:
         if not _usable_audio_file(audio_path):
             _delete_quietly(audio_path)
             audio_path = ""
+
+        if frame_count <= 0:
+            logger.info("Recording stopped before any frames were written; discarding empty clip")
+            _delete_quietly(avi_path)
+            _delete_quietly(audio_path)
+            return
 
         ended_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -466,8 +484,9 @@ class Recorder:
             encoder=encoder,
         )
         try:
+            encode_timeout = _encode_timeout(duration)
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300
+                cmd, capture_output=True, text=True, timeout=encode_timeout
             )
             if result.returncode != 0 and encoder != "libx264":
                 logger.warning(
@@ -485,7 +504,7 @@ class Recorder:
                     encoder=encoder,
                 )
                 result = subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=300
+                    cmd, capture_output=True, text=True, timeout=encode_timeout
                 )
             if result.returncode == 0:
                 mp4_size = _file_size(mp4_path)
@@ -734,6 +753,12 @@ def _timeline_video_filter(frame_count: int, duration: float, avi_fps: float) ->
 
     output_fps = max(1, min(30, round(frame_count / duration)))
     return f"setpts={factor:.8f}*PTS,fps={output_fps}"
+
+
+def _encode_timeout(duration: float) -> int:
+    # Continuous recordings can be much longer than event clips. Give ffmpeg
+    # enough time for CPU-only hosts while still bounding truly stuck encodes.
+    return max(300, min(7200, int(max(1.0, duration) * 4) + 120))
 
 
 def _frame_wall_duration(

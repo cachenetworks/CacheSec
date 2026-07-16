@@ -32,7 +32,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 import cv2
@@ -74,6 +74,29 @@ NIGHT_VISION_HYSTERESIS  = 25   # deactivate only when > 125/255
 _CLAHE = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
 
 
+def _kinect_ambient_brightness(kinect, mode: str, frame: np.ndarray) -> float:
+    """
+    Mean brightness used to decide whether the Kinect should switch between
+    RGB (day) and IR (night) mode.
+
+    In rgb mode `frame` is the plain camera image, so its grayscale mean
+    tracks room brightness directly. In ir mode `frame` is the CLAHE +
+    unsharp-mask enhanced display image (see kinect.py's _ir_to_bgr) — that
+    processing deliberately stretches contrast to fill the full 0-255 range,
+    which flattens out its mean regardless of how bright the room actually
+    is. Measuring brightness on that enhanced frame means the "room got
+    bright again, switch back to RGB" check almost never fires, so it looks
+    stuck in night vision. Read the raw (unenhanced) IR sensor frame instead
+    — ambient light still raises it on top of the IR projector's dot
+    pattern, so it tracks real room brightness.
+    """
+    if mode == "ir":
+        raw = kinect.read_raw_ir()
+        if raw is not None:
+            return float(np.mean(raw))
+    return float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
+
+
 def get_latest_jpeg() -> bytes:
     with _latest_frame_lock:
         return _latest_jpeg
@@ -92,53 +115,62 @@ def get_camera_status() -> dict:
 
 
 def get_live_sources() -> list[dict]:
-    """One live source per camera the user added in the wizard.
+    """Return one live source for each configured camera.
 
-    For IP / Tapo cameras the source includes `go2rtc_stream`, the stream
-    name go2rtc serves the H.264 packets under. The browser pulls fMP4
-    from /admin/go2rtc/api/stream.mp4?src=<go2rtc_stream> for those.
-
-    USB / Kinect cameras don't use go2rtc; they render via MJPEG (the
-    existing /admin/live/stream/<id> endpoint).
+    The setup wizard stores the canonical camera list in `setup_cameras`,
+    while the Settings page still edits the older runtime keys
+    (`ip_camera_url`, `ip_camera_urls`, `tapo_*`, etc.). Merge both so Live
+    Feed does not disappear or keep stale titles after the user edits cameras
+    from Settings.
     """
-    import json
     sources: list[dict] = []
-    try:
-        raw = _live_setting("setup_cameras", "")
-        cams = json.loads(raw) if raw else []
-        if not isinstance(cams, list):
-            cams = []
-    except Exception:
-        cams = []
+    seen: set[tuple[str, str]] = set()
 
-    for cam in cams:
-        cam_id = cam.get("id", "")
-        cam_type = cam.get("type", "")
-        label = cam.get("label") or _wizard_cam_describe(cam)
+    def add(source: dict, key: tuple[str, str]) -> None:
+        if not key[1] or key in seen:
+            return
+        seen.add(key)
+        sources.append(source)
+
+    cams = _load_setup_cameras()
+    for ordinal, cam in enumerate(cams, start=1):
+        cam_id = str(cam.get("id") or "").strip()
+        cam_type = str(cam.get("type") or "").strip().lower()
+        source_id = f"cam_{cam_id}" if cam_id else f"setup_{ordinal}"
+        label = _wizard_cam_label(cam, ordinal)
         detail = _wizard_cam_describe(cam)
         if cam_type in {"ip", "tapo"}:
-            sources.append({
-                "id": f"cam_{cam_id}",
+            url = _setup_camera_stream_url(cam)
+            if not _is_supported_camera_url(url):
+                continue
+            # HLS/snapshot HTTP feeds are more reliable through CacheSec's
+            # ffmpeg-backed MJPEG path than go2rtc's fMP4 endpoint.
+            go2rtc_stream = ""
+            if cam_id and not (_looks_like_hls_url(url) or _looks_like_snapshot_url(url)):
+                go2rtc_stream = f"cam_{cam_id}"
+            add({
+                "id": source_id,
                 "label": label,
                 "kind": cam_type,
                 "active": False,
                 "detail": detail,
-                "go2rtc_stream": f"cam_{cam_id}",
+                "go2rtc_stream": go2rtc_stream,
                 "detection": bool(cam.get("detection")),
-            })
+            }, (cam_type, _normalize_camera_url(url)))
         elif cam_type == "webcam":
             idx = int(cam.get("index", 0))
-            sources.append({
-                "id": f"webcam{idx}" if idx != config.CAMERA_INDEX else "webcam",
+            primary_idx = _primary_camera_index()
+            add({
+                "id": f"webcam{idx}" if idx != primary_idx else "webcam",
                 "label": label,
                 "kind": "webcam",
                 "active": False,
                 "detail": f"/dev/video{idx}",
                 "go2rtc_stream": "",
                 "detection": bool(cam.get("detection")),
-            })
+            }, ("webcam", str(idx)))
         elif cam_type == "kinect":
-            sources.append({
+            add({
                 "id": "kinect",
                 "label": label,
                 "kind": "kinect",
@@ -146,8 +178,137 @@ def get_live_sources() -> list[dict]:
                 "detail": "Kinect v1",
                 "go2rtc_stream": "",
                 "detection": bool(cam.get("detection")),
-            })
+            }, ("kinect", "0"))
+    if cams:
+        return sources
+
+    preferred = _live_camera_preferred_source()
+    primary_idx = _primary_camera_index()
+    if preferred == "webcam":
+        add({
+            "id": "webcam",
+            "label": "USB / Pi Camera",
+            "kind": "webcam",
+            "active": False,
+            "detail": f"/dev/video{primary_idx}",
+            "go2rtc_stream": "",
+            "detection": True,
+        }, ("webcam", str(primary_idx)))
+    elif preferred == "kinect":
+        add({
+            "id": "kinect",
+            "label": "Kinect",
+            "kind": "kinect",
+            "active": False,
+            "detail": "Kinect v1",
+            "go2rtc_stream": "",
+            "detection": True,
+        }, ("kinect", "0"))
+
+    try:
+        from tapo_control import tapo_configured, tapo_rtsp_url, tapo_settings
+
+        if tapo_configured():
+            tapo = tapo_settings()
+            url = tapo_rtsp_url(tapo)
+            add({
+                "id": "tapo",
+                "label": tapo.get("label") or "Tapo Camera",
+                "kind": "tapo",
+                "active": False,
+                "detail": f"{tapo.get('host', '')} ({tapo.get('stream', 'stream1')})",
+                "go2rtc_stream": "",
+                "detection": preferred == "tapo",
+            }, ("tapo", _normalize_camera_url(url)))
+    except Exception:
+        pass
+
+    for idx, item in enumerate(_configured_ip_sources(include_primary=True), start=1):
+        url = str(item["url"])
+        raw_label = str(item.get("label") or "").strip()
+        label = raw_label or f"IP Camera {idx}"
+        scheme = urlsplit(url).scheme.lower()
+        if scheme == "usb":
+            try:
+                usb_index = int((urlsplit(url).netloc or "0").strip() or "0")
+            except ValueError:
+                usb_index = 0
+            add({
+                "id": "webcam" if usb_index == primary_idx else f"webcam{usb_index}",
+                "label": raw_label or f"USB / Pi Camera {usb_index}",
+                "kind": "webcam",
+                "active": False,
+                "detail": f"/dev/video{usb_index}",
+                "go2rtc_stream": "",
+                "detection": preferred == "webcam" and usb_index == primary_idx,
+            }, ("webcam", str(usb_index)))
+            continue
+        if scheme == "kinect":
+            add({
+                "id": "kinect",
+                "label": raw_label or "Kinect",
+                "kind": "kinect",
+                "active": False,
+                "detail": "Kinect v1",
+                "go2rtc_stream": "",
+                "detection": preferred == "kinect",
+            }, ("kinect", "0"))
+            continue
+        if scheme == "tapo":
+            continue
+        add({
+            "id": f"ip{idx}",
+            "label": label,
+            "kind": "ip",
+            "active": False,
+            "detail": _display_source_url(url),
+            "go2rtc_stream": "",
+            "detection": preferred == "ip" and idx == 1,
+        }, ("ip", _normalize_camera_url(url)))
     return sources
+
+
+def _load_setup_cameras() -> list[dict]:
+    import json
+    try:
+        raw = _live_setting("setup_cameras", "")
+        cams = json.loads(raw) if raw else []
+        return cams if isinstance(cams, list) else []
+    except Exception:
+        return []
+
+
+def _wizard_cam_label(cam: dict, ordinal: int = 1) -> str:
+    label = str(cam.get("label") or "").strip()
+    if label:
+        return label
+    t = str(cam.get("type") or "").strip().lower()
+    if t == "tapo":
+        return "Tapo Camera"
+    if t == "ip":
+        return f"IP Camera {ordinal}"
+    if t == "webcam":
+        return f"USB / Pi Camera {cam.get('index', 0)}"
+    if t == "kinect":
+        return "Kinect"
+    return "Camera"
+
+
+def _setup_camera_stream_url(cam: dict) -> str:
+    t = str(cam.get("type") or "").strip().lower()
+    if t == "ip":
+        return _normalize_camera_url(str(cam.get("url") or ""))
+    if t == "tapo":
+        host = str(cam.get("host") or "").strip()
+        user = str(cam.get("username") or "admin") or "admin"
+        password = str(cam.get("password") or "")
+        stream = str(cam.get("stream") or "stream1").strip().lower()
+        if stream not in {"stream1", "stream2"}:
+            stream = "stream1"
+        if not host or not password:
+            return ""
+        return f"rtsp://{quote(user, safe='')}:{quote(password, safe='')}@{host}:554/{stream}"
+    return ""
 
 
 def _wizard_cam_describe(cam: dict) -> str:
@@ -524,8 +685,8 @@ class _DetectionSourceRuntime:
             if frame is None:
                 return None
             if not _night_vision_forced_off():
-                gray_mean = float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
                 mode = self.kinect_source.get_mode()
+                gray_mean = _kinect_ambient_brightness(self.kinect_source, mode, frame)
                 if mode != "ir" and gray_mean < NIGHT_VISION_THRESHOLD:
                     self.kinect_source.set_mode("ir")
                 elif mode == "ir" and gray_mean > (NIGHT_VISION_THRESHOLD + NIGHT_VISION_HYSTERESIS):
@@ -647,7 +808,7 @@ class CameraLoop:
     # ------------------------------------------------------------------
 
     def _open_camera(self) -> cv2.VideoCapture | None:
-        idx = config.CAMERA_INDEX
+        idx = _primary_camera_index()
         # Try V4L2 backend first (most reliable on Pi OS)
         cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
         if not cap.isOpened():
@@ -760,6 +921,7 @@ class CameraLoop:
         _camera_status["night_vision"] = False
         _camera_status["sls_enabled"] = config.SLS_ENABLED
         _camera_status["sls_active"] = False
+        _camera_status["ghost_hunting_mode"] = False
         _camera_status["depth"] = False
 
         # ---- Open preferred source, with fallback ----
@@ -797,7 +959,14 @@ class CameraLoop:
                 logger.info("Using Kinect as camera source")
                 cap = None
 
-                if _night_vision_forced_off():
+                if _ghost_hunting_mode_enabled():
+                    logger.info("Ghost Hunting Mode enabled — starting Kinect in IR/SLS mode")
+                    _night_vision_active = True
+                    _camera_status["night_vision"] = True
+                    _camera_status["sls_active"] = True
+                    kinect.set_mode("ir")
+                    kinect.set_led(KinectLED.BLINK_GREEN)
+                elif _night_vision_forced_off():
                     _night_vision_active = False
                     _camera_status["night_vision"] = False
                     _camera_status["sls_active"] = False
@@ -831,9 +1000,33 @@ class CameraLoop:
                                kinect.error)
                 return False
 
-        def switch_to_kinect_night(gray_mean: float) -> bool:
+        def start_kinect_one_source() -> CaptureHandle | None:
+            """Experimental fallback for Xbox One Kinect RGB via V4L2 index."""
+            raw_index = os.environ.get("KINECT_ONE_CAMERA_INDEX", "-1").strip()
+            try:
+                index = int(raw_index)
+            except ValueError:
+                index = -1
+            if index < 0:
+                return None
+            cap2 = cv2.VideoCapture(index)
+            if not cap2.isOpened():
+                cap2.release()
+                logger.warning("Kinect One index %s not available", index)
+                return None
+            cap2.set(cv2.CAP_PROP_FRAME_WIDTH, config.FRAME_WIDTH)
+            cap2.set(cv2.CAP_PROP_FRAME_HEIGHT, config.FRAME_HEIGHT)
+            cap2.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            _camera_status["source"] = "kinect_one"
+            _camera_status["night_vision"] = False
+            _camera_status["sls_active"] = False
+            _camera_status["depth"] = False
+            logger.info("Using experimental Kinect One RGB source at /dev/video%s", index)
+            return cap2
+
+        def switch_to_kinect_night(gray_mean: float, force: bool = False) -> bool:
             global _night_vision_active
-            if not config.KINECT_NIGHT_VISION_ENABLED or _night_vision_forced_off():
+            if not force and (not config.KINECT_NIGHT_VISION_ENABLED or _night_vision_forced_off()):
                 return False
             logger.info("Main camera dark (brightness=%.1f) - trying Kinect IR night vision", gray_mean)
             if not start_kinect_source():
@@ -892,10 +1085,12 @@ class CameraLoop:
         elif preferred_source == "kinect":
             use_kinect = start_kinect_source()
             if not use_kinect:
-                logger.error("Kinect requested but unavailable; not falling back.")
-                _camera_status["running"] = False
-                recorder.stop_background()
-                return
+                cap = start_kinect_one_source()
+                if cap is None:
+                    logger.error("Kinect requested but unavailable; Kinect One fallback unavailable too.")
+                    _camera_status["running"] = False
+                    recorder.stop_background()
+                    return
 
         if cap is None and not use_kinect:
             _camera_status["running"] = False
@@ -931,9 +1126,18 @@ class CameraLoop:
 
                 frame_count += 1
 
+                ghost_mode = _ghost_hunting_mode_enabled()
+                _camera_status["ghost_hunting_mode"] = ghost_mode
+
                 # ---- Night-vision ----
                 if use_kinect:
-                    if _night_vision_forced_off():
+                    if ghost_mode:
+                        if not _night_vision_active or kinect.get_mode() != "ir":
+                            _night_vision_active = True
+                            _camera_status["night_vision"] = True
+                            kinect.set_mode("ir")
+                            kinect.set_led(KinectLED.BLINK_GREEN)
+                    elif _night_vision_forced_off():
                         if _night_vision_active or kinect.get_mode() != "rgb":
                             _night_vision_active = False
                             _camera_status["night_vision"] = False
@@ -955,7 +1159,7 @@ class CameraLoop:
                         if kinect_settle > 0:
                             self._kinect_settle = kinect_settle - 1
                         else:
-                            gray_mean = float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
+                            gray_mean = _kinect_ambient_brightness(kinect, kinect.get_mode(), frame)
                             if not _night_vision_active and gray_mean < NIGHT_VISION_THRESHOLD:
                                 _night_vision_active = True
                                 _camera_status["night_vision"] = True
@@ -988,8 +1192,13 @@ class CameraLoop:
                     # SLS skeleton overlay — uses Kinect depth data.
                     sls_active = bool(
                         config.SLS_ENABLED
-                        and not _night_vision_forced_off()
-                        and (_night_vision_active or config.SLS_MODE == "always")
+                        and (
+                            ghost_mode
+                            or (
+                                not _night_vision_forced_off()
+                                and (_night_vision_active or config.SLS_MODE == "always")
+                            )
+                        )
                     )
                     _camera_status["sls_active"] = sls_active
                     if sls_active:
@@ -1042,7 +1251,13 @@ class CameraLoop:
                     else:
                         # Webcam: software NV filter
                         gray_mean = float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)))
-                        if _night_vision_forced_off():
+                        if ghost_mode:
+                            if switch_to_kinect_night(gray_mean, force=True):
+                                use_kinect = True
+                                cap = None
+                                frame_count = 0
+                                continue
+                        elif _night_vision_forced_off():
                             if _night_vision_active:
                                 _night_vision_active = False
                                 _camera_status["night_vision"] = False
@@ -1074,7 +1289,7 @@ class CameraLoop:
                 if now - record_all_last_check >= 2.0:
                     new_mode = _live_bool_setting("record_all_mode", False)
                     if record_all_mode and not new_mode:
-                        recorder.signal_unknown_gone()
+                        recorder.stop_continuous_recording("primary")
                     record_all_mode = new_mode
                     record_all_last_check = now
 
@@ -1089,7 +1304,7 @@ class CameraLoop:
                     record_all_last_signal = now
 
                 # Run detection every FRAME_SKIP frames
-                if frame_count % max(1, config.FRAME_SKIP) != 0:
+                if frame_count % max(1, _live_int_setting("frame_skip", config.FRAME_SKIP)) != 0:
                     _set_latest_jpeg(display_frame)
                     continue
 
@@ -1192,6 +1407,10 @@ def _live_bool_setting(key: str, default: bool = False) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _primary_camera_index() -> int:
+    return max(0, _live_int_setting("camera_index", config.CAMERA_INDEX))
+
+
 def _live_camera_preferred_source() -> str:
     """Returns the configured primary detection source.
 
@@ -1218,16 +1437,21 @@ def _go2rtc_relay_for_primary(cam_type: str) -> str:
 
 def _live_auxiliary_source_specs(preferred: str | None = None) -> list[_CameraSourceSpec]:
     preferred = preferred or _live_camera_preferred_source()
+    setup_cams = _load_setup_cameras()
+    if setup_cams:
+        return _setup_detection_source_specs(setup_cams)
+
     specs: list[_CameraSourceSpec] = []
 
     # USB indices are only exposed when the user explicitly configured them
     # in `usb_camera_indices`. Don't probe `/dev/video0` just because
     # CAMERA_INDEX has a default value.
     usb_indices = _configured_usb_indices()
+    primary_idx = _primary_camera_index()
     for index in usb_indices:
-        if preferred == "webcam" and index == config.CAMERA_INDEX:
+        if preferred == "webcam" and index == primary_idx:
             continue
-        source_id = "webcam" if index == config.CAMERA_INDEX else f"webcam{index}"
+        source_id = "webcam" if index == primary_idx else f"webcam{index}"
         specs.append(_CameraSourceSpec(
             id=source_id,
             label=f"USB / Pi Camera {index}",
@@ -1253,17 +1477,106 @@ def _live_auxiliary_source_specs(preferred: str | None = None) -> list[_CameraSo
     except Exception:
         pass
 
-    for idx, item in enumerate(_configured_ip_sources(), start=1):
+    for idx, item in enumerate(_configured_ip_sources(include_primary=preferred != "ip"), start=1):
         url = str(item["url"])
-        specs.append(_CameraSourceSpec(
-            id=f"ip{idx}",
-            label=str(item["label"]),
+        scheme = urlsplit(url).scheme.lower()
+        if scheme == "usb":
+            try:
+                usb_index = int((urlsplit(url).netloc or "0").strip() or "0")
+            except ValueError:
+                usb_index = 0
+            specs.append(_CameraSourceSpec(
+                id=f"webcam{usb_index}",
+                label=str(item["label"] or f"USB / Pi Camera {usb_index}"),
+                kind="webcam",
+                detail=f"index {usb_index}",
+                index=usb_index,
+            ))
+        elif scheme == "kinect":
+            specs.append(_CameraSourceSpec(
+                id="kinect",
+                label=str(item["label"] or "Kinect"),
+                kind="kinect",
+                detail="RGB/IR (hardware)",
+                index=0,
+            ))
+        elif scheme == "tapo":
+            try:
+                from tapo_control import tapo_settings, tapo_rtsp_url
+                s = tapo_settings()
+                specs.append(_CameraSourceSpec(
+                    id="tapo",
+                    label=str(item["label"] or s.get("label") or "Tapo Camera"),
+                    kind="tapo",
+                    detail=f"{s['host']} ({s['stream']})",
+                    url=tapo_rtsp_url(s),
+                ))
+            except Exception:
+                continue
+        else:
+            specs.append(_CameraSourceSpec(
+                id=f"ip{idx}",
+                label=str(item["label"]),
+                kind="ip",
+                detail=_display_source_url(url),
+                url=url,
+                options=dict(item.get("options") or {}),
+            ))
+    return specs
+
+
+def _setup_detection_source_specs(cams: list[dict]) -> list[_CameraSourceSpec]:
+    detection_cams = [cam for cam in cams if cam.get("detection")]
+    if len(detection_cams) <= 1:
+        return []
+
+    specs: list[_CameraSourceSpec] = []
+    for ordinal, cam in enumerate(detection_cams[1:], start=2):
+        spec = _setup_camera_detection_spec(cam, ordinal)
+        if spec is not None:
+            specs.append(spec)
+    return specs
+
+
+def _setup_camera_detection_spec(cam: dict, ordinal: int) -> _CameraSourceSpec | None:
+    cam_id = str(cam.get("id") or f"setup_{ordinal}").strip()
+    source_id = f"cam_{cam_id}" if not cam_id.startswith("cam_") else cam_id
+    cam_type = str(cam.get("type") or "").strip().lower()
+    label = _wizard_cam_label(cam, ordinal)
+    if cam_type == "webcam":
+        try:
+            index = max(0, int(cam.get("index", 0)))
+        except (TypeError, ValueError):
+            index = 0
+        return _CameraSourceSpec(
+            id=source_id,
+            label=label,
+            kind="webcam",
+            detail=f"index {index}",
+            index=index,
+        )
+    if cam_type == "kinect":
+        return _CameraSourceSpec(
+            id=source_id,
+            label=label,
+            kind="kinect",
+            detail="RGB/IR (hardware)",
+            index=0,
+        )
+    if cam_type in {"ip", "tapo"}:
+        url = _setup_camera_stream_url(cam)
+        if not _is_supported_camera_url(url):
+            return None
+        options = cam.get("options") if isinstance(cam.get("options"), dict) else {}
+        return _CameraSourceSpec(
+            id=source_id,
+            label=label,
             kind="ip",
             detail=_display_source_url(url),
             url=url,
-            options=dict(item.get("options") or {}),
-        ))
-    return specs
+            options=dict(options),
+        )
+    return None
 
 
 def _configured_usb_indices() -> list[int]:
@@ -1340,6 +1653,16 @@ def _night_vision_forced_off() -> bool:
     return mode.strip().lower() == "force_off"
 
 
+def _ghost_hunting_mode_enabled() -> bool:
+    """Ghost Hunting Mode: keep the Kinect in IR + SLS skeleton view at all
+    times instead of only switching on when the room is dark. This is the
+    "SLS camera" visual effect from paranormal TV shows — a depth-based
+    stick-figure overlay on person-shaped blobs — not a scientific spirit
+    or EMF detector. Takes priority over night_vision_mode=force_off since
+    the user explicitly asked for it."""
+    return _live_bool_setting("ghost_hunting_mode", False)
+
+
 def _build_ip_onvif_controller(stream_url: str) -> OnvifNightVisionController | None:
     mode = _live_setting("ip_camera_onvif_night_mode", config.IP_CAMERA_ONVIF_NIGHT_MODE)
     mode = mode.strip().lower()
@@ -1373,7 +1696,7 @@ def _configured_ip_sources(include_primary: bool | None = None) -> list[dict[str
         entries.append({"label": "IP Camera", "url": primary, "options": {}})
 
     raw = _live_setting("ip_camera_urls", config.IP_CAMERA_URLS)
-    for chunk in raw.replace(",", "\n").splitlines():
+    for chunk in raw.splitlines():
         item = chunk.strip()
         if not item or item.startswith("#"):
             continue
@@ -1390,7 +1713,10 @@ def _parse_camera_source_entry(item: str, index: int) -> dict[str, object] | Non
 
     options_start = len(parts)
     for idx, part in enumerate(parts):
-        if "=" in part:
+        candidate = _normalize_camera_url(part)
+        # URL query strings contain "=" frequently; only treat as an option
+        # segment when the token is not itself a supported URL.
+        if "=" in part and not _is_supported_camera_url(candidate):
             options_start = idx
             break
     main_parts = parts[:options_start]
@@ -1435,7 +1761,7 @@ def _normalize_camera_url(raw: str) -> str:
 
 def _is_supported_camera_url(url: str) -> bool:
     scheme = urlsplit(url).scheme.lower()
-    return scheme in {"rtsp", "rtsps", "http", "https"}
+    return scheme in {"rtsp", "rtsps", "http", "https", "usb", "kinect", "tapo"}
 
 
 def _set_ffmpeg_capture_options(url: str, transport: str | None = None) -> None:
@@ -1456,8 +1782,10 @@ def _set_ffmpeg_capture_options(url: str, transport: str | None = None) -> None:
 
 
 def _looks_like_hls_url(url: str) -> bool:
-    path = urlsplit(url).path.lower()
-    return path.endswith((".m3u8", ".m3u"))
+    parts = urlsplit(url)
+    path = parts.path.lower()
+    query = parts.query.lower()
+    return path.endswith((".m3u8", ".m3u")) or ".m3u8" in path or "m3u8" in query
 
 
 def _default_http_camera_user_agent() -> str:
@@ -1665,7 +1993,7 @@ def _set_camera_exposure(cap: cv2.VideoCapture, night: bool) -> None:
             # Also set via v4l2-ctl — some cameras ignore OpenCV props
             v4l2 = shutil.which("v4l2-ctl")
             if v4l2:
-                dev = f"/dev/video{config.CAMERA_INDEX}"
+                dev = f"/dev/video{_primary_camera_index()}"
                 subprocess.run(
                     [v4l2, "-d", dev,
                      "--set-ctrl=auto_exposure=1",
@@ -1680,7 +2008,7 @@ def _set_camera_exposure(cap: cv2.VideoCapture, night: bool) -> None:
             cap.set(cv2.CAP_PROP_GAIN, 0)
             v4l2 = shutil.which("v4l2-ctl")
             if v4l2:
-                dev = f"/dev/video{config.CAMERA_INDEX}"
+                dev = f"/dev/video{_primary_camera_index()}"
                 subprocess.run(
                     [v4l2, "-d", dev, "--set-ctrl=auto_exposure=3"],
                     capture_output=True, timeout=2
@@ -1989,14 +2317,34 @@ def generate_mjpeg(source_id: str = "primary"):
     """Generator for Flask MJPEG streaming endpoint."""
     if source_id == "primary":
         while True:
-            frame = get_latest_jpeg()
-            if frame:
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
-                )
+            # Fall back to a "No feed" placeholder instead of yielding
+            # nothing — otherwise a not-yet-started/stopped camera loop
+            # just leaves the browser's <img> blank forever with no
+            # indication anything is wrong.
+            frame = get_latest_jpeg() or get_error_jpeg_bytes()
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+            )
             time.sleep(0.05)  # ~20 FPS max to browser
         return
+
+    setup_match = _setup_camera_for_source_id(source_id)
+    if setup_match is not None:
+        cam, ordinal = setup_match
+        cam_type = str(cam.get("type") or "").strip().lower()
+        label = _wizard_cam_label(cam, ordinal)
+        if cam_type == "ip":
+            options = cam.get("options") if isinstance(cam.get("options"), dict) else {}
+            yield from _generate_ip_mjpeg(
+                _setup_camera_stream_url(cam),
+                label,
+                http_options=dict(options),
+            )
+            return
+        if cam_type == "tapo":
+            yield from _generate_capture_mjpeg(_setup_camera_stream_url(cam), label=label)
+            return
 
     webcam_index = _parse_webcam_source_id(source_id)
     if webcam_index is not None:
@@ -2042,14 +2390,22 @@ def generate_mjpeg(source_id: str = "primary"):
     yield from _generate_error_mjpeg()
 
 
+def _setup_camera_for_source_id(source_id: str) -> tuple[dict, int] | None:
+    for ordinal, cam in enumerate(_load_setup_cameras(), start=1):
+        cam_id = str(cam.get("id") or "").strip()
+        if (cam_id and source_id == f"cam_{cam_id}") or source_id == f"setup_{ordinal}":
+            return cam, ordinal
+    return None
+
+
 def _parse_webcam_source_id(source_id: str) -> int | None:
     if source_id == "webcam":
-        return config.CAMERA_INDEX
+        return _primary_camera_index()
     if not source_id.startswith("webcam"):
         return None
     suffix = source_id[6:]
     if not suffix:
-        return config.CAMERA_INDEX
+        return _primary_camera_index()
     try:
         return int(suffix)
     except ValueError:
@@ -2190,13 +2546,127 @@ def _read_snapshot_frame(
         return None
 
 
-def _generate_error_mjpeg(single: bool = False):
+def get_error_jpeg_bytes() -> bytes:
     img = np.zeros((240, 426, 3), dtype=np.uint8)
     cv2.putText(img, "No feed", (150, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (180, 180, 180), 2)
     ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
-    payload = buf.tobytes() if ok else b""
+    return buf.tobytes() if ok else b""
+
+
+def _generate_error_mjpeg(single: bool = False):
+    payload = get_error_jpeg_bytes()
     while True:
         yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + payload + b"\r\n"
         if single:
             return
         time.sleep(1.0)
+
+
+def _capture_single_frame(source, http_options: dict | None = None) -> np.ndarray | None:
+    """
+    Open a capture just long enough to grab one frame, then release it.
+
+    Used for live-feed grid thumbnails so having N cameras on screen doesn't
+    turn into N continuous ~30fps capture+encode loops (see generate_mjpeg,
+    which is right for the single-camera focus view but far too expensive
+    to run per-tile for every camera at once) — a thumbnail only needs a
+    fresh frame every few seconds.
+    """
+    if isinstance(source, str):
+        cap = _open_stream_capture(source, "snapshot", http_options=http_options)
+    else:
+        cap = cv2.VideoCapture(source)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    if cap is None or not cap.isOpened():
+        if cap is not None:
+            cap.release()
+        return None
+    try:
+        ok, frame = cap.read()
+        return frame if ok else None
+    finally:
+        cap.release()
+
+
+def _encode_jpeg_bytes(frame: np.ndarray | None, quality: int = 70) -> bytes | None:
+    if frame is None:
+        return None
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return buf.tobytes() if ok else None
+
+
+def get_snapshot_jpeg(source_id: str = "primary") -> bytes | None:
+    """
+    Return one encoded JPEG frame for a live-feed grid thumbnail, without
+    opening a persistent capture loop for it. Mirrors generate_mjpeg's
+    source-id dispatch, but grabs a single frame per call instead of
+    streaming continuously.
+    """
+    if source_id == "primary":
+        return get_latest_jpeg() or None
+
+    setup_match = _setup_camera_for_source_id(source_id)
+    if setup_match is not None:
+        cam, _ordinal = setup_match
+        cam_type = str(cam.get("type") or "").strip().lower()
+        url = _setup_camera_stream_url(cam)
+        if cam_type == "ip":
+            options = cam.get("options") if isinstance(cam.get("options"), dict) else {}
+            if _looks_like_snapshot_url(url):
+                return _encode_jpeg_bytes(_read_snapshot_frame(url, "ip camera", http_options=dict(options)))
+            return _encode_jpeg_bytes(_capture_single_frame(url, http_options=dict(options)))
+        if cam_type == "tapo":
+            return _encode_jpeg_bytes(_capture_single_frame(url))
+
+    webcam_index = _parse_webcam_source_id(source_id)
+    if webcam_index is not None:
+        return _encode_jpeg_bytes(_capture_single_frame(webcam_index))
+
+    kinect_index = _parse_kinect_source_id(source_id)
+    if kinect_index is not None:
+        try:
+            from kinect import get_kinect
+        except Exception:
+            return None
+        kinect = get_kinect(kinect_index)
+        if not kinect.available:
+            # kinect.start() can block for up to 4s waiting for the first
+            # frame — fine once for a persistent stream, but far too slow
+            # to do inline on every few-second thumbnail poll. Kick it off
+            # in the background (start() is lock-guarded against duplicate
+            # concurrent attempts) so a later poll picks up a frame once
+            # it's ready, and fail fast now instead of blocking this one.
+            threading.Thread(target=kinect.start, daemon=True).start()
+            return None
+        return _encode_jpeg_bytes(kinect.read_frame())
+
+    if source_id == "tapo":
+        try:
+            from tapo_control import tapo_rtsp_url, tapo_configured
+        except Exception:
+            return None
+        if not tapo_configured():
+            return None
+        url = tapo_rtsp_url()
+        if not url:
+            return None
+        return _encode_jpeg_bytes(_capture_single_frame(url))
+
+    if source_id.startswith("ip"):
+        try:
+            idx = int(source_id[2:]) - 1
+        except ValueError:
+            idx = -1
+        sources = _configured_ip_sources()
+        if 0 <= idx < len(sources):
+            source = sources[idx]
+            if _looks_like_snapshot_url(source["url"]):
+                return _encode_jpeg_bytes(
+                    _read_snapshot_frame(source["url"], source["label"], http_options=source.get("options"))
+                )
+            return _encode_jpeg_bytes(
+                _capture_single_frame(source["url"], http_options=source.get("options"))
+            )
+
+    return None

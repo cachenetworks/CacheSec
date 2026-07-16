@@ -1,0 +1,124 @@
+# =============================================================================
+# CacheSec — Gitea / Forgejo Actions build pipeline
+#
+# Gitea Actions (>= 1.19) and Forgejo Actions use GitHub-Actions-compatible
+# syntax, so this mirrors the GitHub workflow. Builds the multi-variant images
+# and pushes them with docker buildx (multi-arch amd64 / arm64).
+#
+#   - Gitea:   keep this file at  .gitea/workflows/container.yml
+#   - Forgejo: copy it to         .forgejo/workflows/container.yml
+#
+# ---------------------------------------------------------------------------
+# RUNNER REQUIREMENTS
+#   - A registered act_runner with a Docker-capable label (the examples assume
+#     the label `ubuntu-latest`). Adjust `runs-on` to match your runner labels.
+#   - The runner must be able to fetch reusable actions. act_runner defaults to
+#     pulling actions from github.com; if your instance mirrors actions, set
+#     the runner's DEFAULT_ACTIONS_URL accordingly.
+#   - For arm64 builds the runner host needs binfmt/QEMU (the setup-qemu step
+#     installs it, which requires a privileged-capable runner).
+#
+# SECRETS / VARIABLES (Repo or Org > Settings > Actions)
+#   Variables (vars.*):
+#     REGISTRY     registry host, e.g. gitea.example.com   (default: gitea host)
+#     IMAGE_NAME   image path under the registry, e.g. you/cachesec
+#   Secrets (secrets.*):
+#     REGISTRY_USERNAME   registry user
+#     REGISTRY_PASSWORD   registry password / token with package:write
+# =============================================================================
+
+name: Build Container
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Every variant bundles the full feature set (Kinect v1 + Kinect v2 +
+          # Detectron2) — variants only differ by platform/GPU target now, not
+          # by which features are compiled in. Pi skips Detectron2: no GPU and
+          # CPU-only inference on Pi hardware isn't practically usable.
+          - variant: cpu
+            install_kinect: "true"
+            install_kinect2: "true"
+            install_detectron2: "true"
+            torch_index_url: "https://download.pytorch.org/whl/cpu"
+            platforms: linux/amd64,linux/arm64
+            tags: cpu latest
+          - variant: pi
+            install_kinect: "true"
+            install_kinect2: "true"
+            install_detectron2: "false"
+            torch_index_url: "https://download.pytorch.org/whl/cpu"
+            platforms: linux/arm64
+            tags: pi
+          - variant: cuda11
+            install_kinect: "true"
+            install_kinect2: "true"
+            install_detectron2: "true"
+            torch_index_url: "https://download.pytorch.org/whl/cu118"
+            platforms: linux/amd64
+            tags: cuda11
+          - variant: cuda12
+            install_kinect: "true"
+            install_kinect2: "true"
+            install_detectron2: "true"
+            torch_index_url: "https://download.pytorch.org/whl/cu121"
+            platforms: linux/amd64
+            tags: cuda12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Compute tags
+        id: tags
+        shell: bash
+        run: |
+          IMAGE="${{ vars.REGISTRY }}/${{ vars.IMAGE_NAME }}"
+          FINAL="${{ matrix.tags }}"
+          # On a version tag push, add per-variant + (cpu only) bare version tags.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            FINAL="$FINAL ${{ matrix.variant }}-${{ github.ref_name }}"
+            if [ "${{ matrix.variant }}" = "cpu" ]; then
+              FINAL="$FINAL ${{ github.ref_name }}"
+            fi
+          fi
+          OUT=""
+          for t in $FINAL; do OUT="${OUT}${IMAGE}:${t}\n"; done
+          printf 'list<<EOF\n%b\nEOF\n' "$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (${{ matrix.variant }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platforms }}
+          build-args: |
+            INSTALL_KINECT=${{ matrix.install_kinect }}
+            INSTALL_KINECT2=${{ matrix.install_kinect2 }}
+            INSTALL_DETECTRON2=${{ matrix.install_detectron2 }}
+            TORCH_INDEX_URL=${{ matrix.torch_index_url }}
+          push: true
+          tags: ${{ steps.tags.outputs.list }}

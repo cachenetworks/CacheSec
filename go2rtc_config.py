@@ -21,7 +21,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,21 @@ def _source_url(cam: dict) -> str:
     return ""
 
 
+def _skip_go2rtc_source(url: str) -> bool:
+    """Feeds that CacheSec serves through its ffmpeg MJPEG fallback."""
+    parts = urlsplit(url)
+    path = parts.path.lower()
+    query = parts.query.lower()
+    if (
+        path.endswith((".m3u8", ".m3u", ".jpg", ".jpeg", ".png", ".webp"))
+        or ".m3u8" in path
+        or "m3u8" in query
+    ):
+        return True
+    lowered = url.lower()
+    return any(token in lowered for token in ("snapshot", "still"))
+
+
 def regenerate_config() -> None:
     """Read the wizard's camera list and write go2rtc.yaml."""
     try:
@@ -90,7 +105,7 @@ def regenerate_config() -> None:
     for cam in cams:
         sid = stream_id_for(cam)
         url = _source_url(cam)
-        if not (sid and url):
+        if not (sid and url) or _skip_go2rtc_source(url):
             continue
         # The first source is the raw RTSP from the camera. The second is
         # an ffmpeg-backed transcoder that converts the camera's audio

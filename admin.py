@@ -34,8 +34,10 @@ import logging
 import os
 import shutil
 import subprocess
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from flask import (
     Blueprint, render_template, redirect, url_for, request,
@@ -63,6 +65,123 @@ admin_bp = Blueprint("admin", __name__)
 def _storage_disk_path() -> str:
     """Pick a local CacheSec storage path for filesystem usage stats."""
     return config.RECORDINGS_DIR or config.SNAPSHOTS_DIR or config.UPLOAD_FOLDER or "."
+
+
+def _sync_camera_settings_from_setup_cameras(raw: str, user_id: int | None) -> None:
+    """Normalize the unified camera list and update legacy runtime settings."""
+    try:
+        data = json.loads(raw) if raw else []
+    except Exception:
+        data = []
+    if not isinstance(data, list):
+        data = []
+
+    cams: list[dict] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        cam_type = str(item.get("type") or "").strip().lower()
+        if cam_type not in {"webcam", "ip", "tapo", "kinect"}:
+            continue
+        cam = {
+            "id": str(item.get("id") or uuid.uuid4().hex[:8])[:32],
+            "type": cam_type,
+            "label": str(item.get("label") or "").strip(),
+            "detection": bool(item.get("detection")),
+        }
+        if cam_type == "webcam":
+            try:
+                cam["index"] = max(0, int(item.get("index", 0)))
+            except (TypeError, ValueError):
+                cam["index"] = 0
+        elif cam_type == "ip":
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            transport = str(item.get("transport") or "tcp").strip().lower()
+            if transport not in {"tcp", "udp", "udp_multicast", "http"}:
+                transport = "tcp"
+            options = item.get("options") if isinstance(item.get("options"), dict) else {}
+            cam["url"] = url
+            cam["transport"] = transport
+            cam["options"] = {
+                key: str(options.get(key) or "").strip()
+                for key in ("referer", "origin", "user_agent")
+                if str(options.get(key) or "").strip()
+            }
+        elif cam_type == "tapo":
+            host = str(item.get("host") or "").strip()
+            password = str(item.get("password") or "")
+            if not host or not password:
+                continue
+            stream = str(item.get("stream") or "stream1").strip().lower()
+            if stream not in {"stream1", "stream2"}:
+                stream = "stream1"
+            cam.update(
+                host=host,
+                username=str(item.get("username") or "admin").strip() or "admin",
+                password=password,
+                stream=stream,
+            )
+        cams.append(cam)
+
+    detection_cams = [cam for cam in cams if cam.get("detection")]
+    primary = detection_cams[0] if detection_cams else None
+
+    set_setting("setup_cameras", json.dumps(cams), user_id=user_id)
+    set_setting("setup_cameras_done", "true" if cams else "false", user_id=user_id)
+    set_setting(
+        "multi_camera_detection_enabled",
+        "true" if len(detection_cams) > 1 else "false",
+        user_id=user_id,
+    )
+
+    if primary is None:
+        set_setting("camera_preferred_source", "none", user_id=user_id)
+        set_setting("ip_camera_url", "", user_id=user_id)
+    else:
+        primary_type = primary.get("type", "webcam")
+        set_setting("camera_preferred_source", primary_type, user_id=user_id)
+        if primary_type == "webcam":
+            set_setting("camera_index", str(primary.get("index", 0)), user_id=user_id)
+            set_setting("ip_camera_url", "", user_id=user_id)
+        elif primary_type == "ip":
+            set_setting("ip_camera_url", primary.get("url", ""), user_id=user_id)
+            set_setting("ip_camera_rtsp_transport", primary.get("transport", "tcp"), user_id=user_id)
+        elif primary_type == "tapo":
+            set_setting("tapo_host", primary.get("host", ""), user_id=user_id)
+            set_setting("tapo_username", primary.get("username", "admin"), user_id=user_id)
+            set_setting("tapo_password", primary.get("password", ""), user_id=user_id)
+            set_setting("tapo_stream", primary.get("stream", "stream1"), user_id=user_id)
+
+    extras = [cam for cam in cams if cam is not primary]
+    extra_ip_lines: list[str] = []
+    extra_usb_indices: list[str] = []
+    for cam in extras:
+        cam_type = cam.get("type")
+        label = str(cam.get("label") or "").strip()
+        if cam_type == "webcam":
+            extra_usb_indices.append(str(cam.get("index", 0)))
+        elif cam_type == "ip":
+            parts = []
+            if label:
+                parts.append(label)
+            parts.append(str(cam.get("url") or ""))
+            options = cam.get("options") if isinstance(cam.get("options"), dict) else {}
+            for key in ("referer", "origin", "user_agent"):
+                if options.get(key):
+                    parts.append(f"{key}={options[key]}")
+            extra_ip_lines.append("|".join(parts))
+        elif cam_type == "tapo":
+            host = cam.get("host", "")
+            user = quote(cam.get("username", "admin"), safe="")
+            pw = quote(cam.get("password", ""), safe="")
+            stream = cam.get("stream", "stream1")
+            url = f"rtsp://{user}:{pw}@{host}:554/{stream}"
+            extra_ip_lines.append(f"{label}|{url}" if label else url)
+
+    set_setting("ip_camera_urls", "\n".join(extra_ip_lines), user_id=user_id)
+    set_setting("usb_camera_indices", ",".join(extra_usb_indices), user_id=user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +242,84 @@ def live_stream(source_id: str = "primary"):
         generate_mjpeg(source_id),
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+@admin_bp.route("/live/snapshot/<source_id>")
+@operator_required
+def live_snapshot(source_id: str):
+    """One still JPEG frame for a live-feed grid thumbnail.
+
+    Unlike live_stream, this does not hold a capture open — used so the
+    "All Cameras" grid polls a frame every few seconds per tile instead of
+    every tile running a continuous MJPEG stream simultaneously.
+    """
+    from camera import get_snapshot_jpeg, get_error_jpeg_bytes
+    jpeg = get_snapshot_jpeg(source_id) or get_error_jpeg_bytes()
+    return Response(
+        jpeg,
+        mimetype="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@admin_bp.route("/api/camera/control", methods=["POST"])
+@operator_required
+def api_camera_control():
+    action = (request.json or {}).get("action", "").strip().lower()
+    source_id = (request.json or {}).get("source_id", "primary").strip().lower()
+    if action not in {"up", "down", "left", "right", "stop"}:
+        return jsonify({"ok": False, "error": "Unsupported action"}), 400
+
+    if source_id in {"", "primary"}:
+        from camera import get_camera_status
+        source = (get_camera_status().get("source") or "").lower()
+    elif source_id == "kinect":
+        source = "kinect"
+    elif source_id.startswith("kinect"):
+        source = "kinect"
+    elif source_id.startswith("tapo"):
+        source = "tapo"
+    elif source_id.startswith("ip"):
+        source = "ip"
+    else:
+        source = "unknown"
+
+    if source == "kinect":
+        from kinect import get_kinect
+        index = 0
+        if source_id.startswith("kinect") and source_id != "kinect":
+            try:
+                index = max(0, int(source_id.replace("kinect", "")) - 1)
+            except ValueError:
+                index = 0
+        ks = get_kinect(index)
+        if action in {"left", "right"}:
+            return jsonify({
+                "ok": False,
+                "error": "Kinect only tilts up/down — it has no left/right pan motor.",
+            }), 400
+        if not ks.motor_available:
+            return jsonify({
+                "ok": False,
+                "error": "Kinect motor is disabled. Enable 'Kinect Motor / Tilt Control' in "
+                         "Settings and save — the camera restarts automatically to pick it up.",
+            }), 400
+        if action == "up":
+            ks.set_tilt((ks.get_tilt_angle() or 0.0) + 5.0)
+        elif action == "down":
+            ks.set_tilt((ks.get_tilt_angle() or 0.0) - 5.0)
+        return jsonify({
+            "ok": True,
+            "source": source,
+            "source_id": source_id,
+            "action": action,
+            "tilt_degrees": ks.get_tilt_angle(),
+        })
+
+    return jsonify({
+        "ok": False,
+        "error": f"Source '{source_id}' ({source}) does not expose move controls in CacheSec yet.",
+    }), 400
 
 
 # ---------------------------------------------------------------------------
@@ -813,7 +1010,11 @@ def settings():
         "recognition_threshold",
         "frame_skip",
         "night_vision_mode",
+        "ghost_hunting_mode",
+        "kinect_motor_enabled",
+        "setup_cameras",
         "camera_preferred_source",
+        "camera_index",
         "usb_camera_indices",
         "usb_camera_auto_discover",
         "usb_camera_scan_limit",
@@ -859,16 +1060,23 @@ def settings():
             values = request.form.getlist(key)
             val = values[-1].strip() if values else ""
             set_setting(key, val, user_id=session["user_id"])
+        _sync_camera_settings_from_setup_cameras(
+            request.form.get("setup_cameras", ""),
+            session["user_id"],
+        )
         after = {k: get_setting(k) for k in _setting_keys}
 
         reload_keys = {
             "frame_skip",
             "night_vision_mode",
+            "setup_cameras",
             "camera_preferred_source",
+            "camera_index",
             "usb_camera_indices",
             "usb_camera_auto_discover",
             "usb_camera_scan_limit",
             "multi_camera_detection_enabled",
+            "kinect_motor_enabled",
             "ip_camera_url",
             "ip_camera_urls",
             "ip_camera_rtsp_transport",
@@ -887,7 +1095,25 @@ def settings():
             "moving_object_threshold",
         }
         changed_keys = {k for k in _setting_keys if before.get(k) != after.get(k)}
+        if (
+            "record_all_mode" in changed_keys
+            and before.get("record_all_mode", "false").strip().lower() == "true"
+            and after.get("record_all_mode", "false").strip().lower() != "true"
+        ):
+            try:
+                from recorder import get_recorder
+
+                get_recorder().stop_continuous_recording("primary")
+            except Exception as exc:
+                logger.warning("Could not stop continuous recording after settings change: %s", exc)
         if changed_keys & reload_keys:
+            try:
+                from go2rtc_config import regenerate_config, reload_go2rtc
+
+                regenerate_config()
+                reload_go2rtc()
+            except Exception as exc:
+                logger.warning("go2rtc config reload failed after settings change: %s", exc)
             try:
                 from camera import get_camera_loop
 
@@ -976,6 +1202,7 @@ def api_status():
         "night_vision":        cam.get("night_vision", False),
         "sls_enabled":         cam.get("sls_enabled", False),
         "sls_active":          cam.get("sls_active", False),
+        "ghost_hunting_mode":  cam.get("ghost_hunting_mode", False),
         "depth":               cam.get("depth", False),
         "is_recording":        rec.is_recording,
         "recording_duration":  rec.duration_seconds,
@@ -997,7 +1224,11 @@ def api_sensors():
     cam = get_camera_status()
     live_sources = get_live_sources()
 
-    webcam_device = f"/dev/video{config.CAMERA_INDEX}"
+    try:
+        webcam_index = int(get_setting("camera_index", str(config.CAMERA_INDEX)) or config.CAMERA_INDEX)
+    except (TypeError, ValueError):
+        webcam_index = config.CAMERA_INDEX
+    webcam_device = f"/dev/video{max(0, webcam_index)}"
     webcam_present = Path(webcam_device).exists()
     gpio_present = Path("/dev/gpiochip0").exists()
     audio_present = Path("/dev/snd").exists()
@@ -1014,7 +1245,11 @@ def api_sensors():
         ).stdout
         text = out.lower()
         kinect_parts["camera"] = "045e:02ae" in text
-        kinect_parts["audio"] = "045e:02ad" in text
+        # Kinect audio enumerates under different PIDs across hardware
+        # revisions — 02ad is the common Xbox 360 Kinect one, but some units
+        # (confirmed via lsusb on real hardware) report 02bb ("Kinect Audio")
+        # or the Kinect-for-Windows 02be instead.
+        kinect_parts["audio"] = any(pid in text for pid in ("045e:02ad", "045e:02bb", "045e:02be"))
         kinect_parts["motor"] = "045e:02b0" in text
     except Exception:
         pass
@@ -1026,6 +1261,7 @@ def api_sensors():
         "night_vision": cam.get("night_vision", False),
         "sls_enabled": cam.get("sls_enabled", False),
         "sls_active": cam.get("sls_active", False),
+        "ghost_hunting_mode": cam.get("ghost_hunting_mode", False),
         "depth_available": cam.get("depth", False),
         "webcam_device": webcam_device,
         "webcam_present": webcam_present,

@@ -5,6 +5,8 @@ All other modules import from here. Never hardcode secrets elsewhere.
 """
 
 import os
+import sys
+import secrets
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -35,11 +37,41 @@ def _float(key: str, default: float) -> float:
 # ---------------------------------------------------------------------------
 # Flask
 # ---------------------------------------------------------------------------
-SECRET_KEY: str = os.getenv("SECRET_KEY", "CHANGE_ME_IN_PRODUCTION")
 FLASK_ENV: str = os.getenv("FLASK_ENV", "production")
 HOST: str = os.getenv("HOST", "127.0.0.1")
 PORT: int = _int("PORT", 5000)
 DEBUG: bool = FLASK_ENV == "development"
+
+# ---------------------------------------------------------------------------
+# Session signing key.
+#
+# Flask session cookies are *signed* (not encrypted) with SECRET_KEY. Anyone
+# who knows this value can forge a cookie for any user — including one with
+# role=admin — and bypass login entirely. The old default was the public
+# literal "CHANGE_ME_IN_PRODUCTION", which means anyone who has ever seen this
+# source code could forge an admin session. We now refuse to run in production
+# with a missing/placeholder key, and auto-generate an ephemeral one in dev.
+# ---------------------------------------------------------------------------
+_INSECURE_SECRET_KEYS = {"", "CHANGE_ME_IN_PRODUCTION", "changeme", "secret"}
+SECRET_KEY: str = os.getenv("SECRET_KEY", "").strip()
+if SECRET_KEY in _INSECURE_SECRET_KEYS:
+    if DEBUG:
+        SECRET_KEY = secrets.token_urlsafe(48)
+        print(
+            "WARNING: SECRET_KEY is unset — generated a random ephemeral key for "
+            "development. Sessions will be invalidated on every restart. Set "
+            "SECRET_KEY in your .env for a stable key.",
+            file=sys.stderr,
+        )
+    else:
+        raise RuntimeError(
+            "SECRET_KEY is unset or left at an insecure default. Refusing to "
+            "start: a known signing key lets anyone forge an admin session "
+            "cookie. Generate a strong key with:\n"
+            "    python -c \"import secrets; print(secrets.token_urlsafe(48))\"\n"
+            "and set it as SECRET_KEY in your .env (or FLASK_ENV=development for "
+            "local testing)."
+        )
 
 # ---------------------------------------------------------------------------
 # Database

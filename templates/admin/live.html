@@ -7,9 +7,12 @@
 <div class="row justify-content-center">
   <div class="col-lg-10">
     {% if sources %}
-    <div class="card cs-card">
+    <div class="card cs-card d-none" id="focus-view-card">
       <div class="card-header cs-card-header d-flex flex-column flex-lg-row justify-content-between gap-3">
         <div>
+          <button type="button" id="back-to-grid" class="btn btn-sm btn-outline-light mb-2 d-none">
+            <i class="bi bi-arrow-left me-1"></i>Back to all cameras
+          </button>
           <span id="live-feed-title">{{ sources[0].label }}</span>
           <div class="small text-muted" id="live-feed-detail">{{ sources[0].detail }}</div>
         </div>
@@ -20,7 +23,14 @@
           <span class="badge bg-info text-dark d-none" id="sls-badge">
             <i class="bi bi-person-bounding-box me-1"></i>SLS
           </span>
+          <span class="badge bg-purple text-light d-none" id="ghost-badge" style="background-color:#6f42c1;">
+            <i class="bi bi-stars me-1"></i>GHOST HUNTING MODE
+          </span>
           <span class="badge bg-success blink-dot"><i class="bi bi-circle-fill me-1"></i>LIVE</span>
+          <div class="btn-group btn-group-sm ms-1" role="group">
+            <button type="button" id="prev-camera-btn" class="btn btn-outline-light"><i class="bi bi-chevron-left"></i></button>
+            <button type="button" id="next-camera-btn" class="btn btn-outline-light"><i class="bi bi-chevron-right"></i></button>
+          </div>
         </div>
       </div>
       <div class="card-body border-bottom border-secondary">
@@ -65,8 +75,19 @@
         </button>
       </div>
       <div class="card-footer text-muted small">
-        IP / Tapo cameras stream native H.264 via go2rtc (low-latency MSE).
-        USB / Kinect feeds use MJPEG.
+        RTSP IP / Tapo cameras can stream native H.264 via go2rtc.
+        HLS, snapshots, USB, and Kinect feeds use MJPEG fallback.
+      </div>
+    </div>
+    <div class="card cs-card mt-3 d-none" id="camera-controls-card">
+      <div class="card-header cs-card-header"><i class="bi bi-arrows-move me-1"></i>Primary Camera Move Controls</div>
+      <div class="card-body d-flex flex-wrap gap-2 align-items-center">
+        <button class="btn btn-outline-light btn-sm cam-move-btn" data-action="up">Up</button>
+        <button class="btn btn-outline-light btn-sm cam-move-btn" data-action="left">Left</button>
+        <button class="btn btn-outline-light btn-sm cam-move-btn" data-action="stop">Stop</button>
+        <button class="btn btn-outline-light btn-sm cam-move-btn" data-action="right">Right</button>
+        <button class="btn btn-outline-light btn-sm cam-move-btn" data-action="down">Down</button>
+          <span class="small text-muted" id="cam-move-status">Ready (controls apply to selected camera).</span>
       </div>
     </div>
     {% else %}
@@ -84,7 +105,7 @@
   </div>
 </div>
 
-{% if sources|length > 1 %}
+{% if sources %}
 <div class="row justify-content-center mt-3">
   <div class="col-lg-10">
     <div class="card cs-card">
@@ -92,22 +113,27 @@
         <div>
           <i class="bi bi-grid-3x3-gap-fill me-2"></i>All Cameras
         </div>
-        <span class="badge bg-success blink-dot"><i class="bi bi-circle-fill me-1"></i>LIVE</span>
+        <div class="d-flex align-items-center gap-2">
+          <button type="button" class="btn btn-sm btn-outline-light d-none" id="grid-back-btn">
+            <i class="bi bi-arrow-left me-1"></i>Show all
+          </button>
+          <span class="badge bg-success blink-dot"><i class="bi bi-circle-fill me-1"></i>LIVE</span>
+        </div>
       </div>
       <div class="card-body">
         <div class="row g-3">
           {% for source in sources %}
-          <div class="col-12 col-md-6 col-xl-4">
+          <div class="col-12 col-md-6 col-xl-4 live-grid-col">
             <div class="small text-muted mb-2 text-truncate">
               {{ source.label }}
               {% if source.detection %}<span class="badge bg-danger ms-1">Detection</span>{% endif %}
             </div>
-            <div class="bg-black rounded overflow-hidden text-center">
+            <div class="bg-black rounded overflow-hidden text-center live-grid-tile" data-source-id="{{ source.id }}">
               {% if source.go2rtc_stream %}
               <video class="img-fluid live-grid-vid" autoplay muted playsinline
-                     src="{{ url_for('admin.go2rtc_proxy', subpath='api/stream.mp4') }}?src={{ source.go2rtc_stream }}"></video>
+                     src="{{ url_for('admin.go2rtc_proxy', subpath='api/stream.mp4') }}?src={{ source.go2rtc_stream|urlencode }}"></video>
               {% else %}
-              <img src="{{ url_for('admin.live_stream', source_id=source.id) }}"
+              <img data-snapshot-src="{{ url_for('admin.live_snapshot', source_id=source.id) }}"
                    class="img-fluid live-grid-img"
                    alt="{{ source.label }}">
               {% endif %}
@@ -135,6 +161,7 @@
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-multi-detection" class="badge bg-secondary">multi detection: ...</span></div>
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-nightvision" class="badge bg-secondary">night vision: ...</span></div>
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-sls" class="badge bg-secondary">sls: ...</span></div>
+          <div class="col-12 col-md-6 col-xl-4"><span id="sensor-ghost" class="badge bg-secondary">ghost hunting mode: ...</span></div>
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-depth" class="badge bg-secondary">depth: ...</span></div>
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-webcam" class="badge bg-secondary">webcam: ...</span></div>
           <div class="col-12 col-md-6 col-xl-4"><span id="sensor-kinect" class="badge bg-secondary">kinect usb: ...</span></div>
@@ -154,6 +181,7 @@
 (function () {
   const nvBadge = document.getElementById('nv-badge');
   const slsBadge = document.getElementById('sls-badge');
+  const ghostBadge = document.getElementById('ghost-badge');
   const image = document.getElementById('live-feed-image');
   const video = document.getElementById('live-feed-video');
   const title = document.getElementById('live-feed-title');
@@ -164,6 +192,13 @@
   const audioToggle = document.getElementById('audio-toggle');
   const audioIcon = document.getElementById('audio-icon');
   const audioLabel = document.getElementById('audio-label');
+  const moveStatus = document.getElementById('cam-move-status');
+  const controlsCard = document.getElementById('camera-controls-card');
+  const gridBackBtn = document.getElementById('grid-back-btn');
+  const focusCard = document.getElementById('focus-view-card');
+  const backToGridBtn = document.getElementById('back-to-grid');
+  const prevBtn = document.getElementById('prev-camera-btn');
+  const nextBtn = document.getElementById('next-camera-btn');
 
   function refreshAudioButton() {
     if (!audioToggle) return;
@@ -215,6 +250,7 @@
     multiDetection: document.getElementById('sensor-multi-detection'),
     nightvision: document.getElementById('sensor-nightvision'),
     sls: document.getElementById('sensor-sls'),
+    ghost: document.getElementById('sensor-ghost'),
     depth: document.getElementById('sensor-depth'),
     webcam: document.getElementById('sensor-webcam'),
     kinect: document.getElementById('sensor-kinect'),
@@ -225,6 +261,7 @@
   };
   let activeSourceId = sourceButtons.length ? sourceButtons[0].dataset.sourceId : 'primary';
   const initialSourceCount = sourceButtons.length;
+  const initialSourceKey = sourceButtons.map((b) => b.dataset.sourceId).join('|');
 
   sourceButtons.forEach((button) => {
     button.addEventListener('click', () => {
@@ -238,8 +275,106 @@
     });
   });
 
-  // Initial render — show the first source's feed.
-  if (sourceButtons.length > 0) showSource(sourceButtons[0]);
+  const sourceById = new Map(sourceButtons.map((b) => [b.dataset.sourceId, b]));
+  const orderedSourceIds = sourceButtons.map((b) => b.dataset.sourceId);
+  function openFocus(sourceId) {
+    const btn = sourceById.get(sourceId);
+    if (!btn) return;
+    activeSourceId = sourceId;
+    sourceButtons.forEach((candidate) => {
+      candidate.classList.toggle('btn-danger', candidate === btn);
+      candidate.classList.toggle('btn-outline-light', candidate !== btn);
+    });
+    showSource(btn);
+    if (focusCard) focusCard.classList.remove('d-none');
+    if (backToGridBtn) backToGridBtn.classList.remove('d-none');
+    if (controlsCard) controlsCard.classList.remove('d-none');
+    if (focusCard) focusCard.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    pollStatus();
+  }
+  const gridTiles = Array.from(document.querySelectorAll('.live-grid-tile'));
+  const gridCols = Array.from(document.querySelectorAll('.live-grid-col'));
+
+  // Grid thumbnails poll a single still frame every few seconds instead of
+  // holding a continuous MJPEG stream open per tile — with several cameras
+  // configured, N simultaneous live streams just for background thumbnails
+  // was enough to spike CPU (and stall the page) on lower-powered hosts.
+  // Requests are staggered slightly so N cameras don't all hit the server
+  // in the same instant.
+  const GRID_SNAPSHOT_INTERVAL_MS = 4000;
+  function refreshGridSnapshots() {
+    document.querySelectorAll('.live-grid-img[data-snapshot-src]').forEach((img, i) => {
+      // A slow/unreachable camera can take several seconds to respond.
+      // Skip this tile's refresh entirely if its previous request hasn't
+      // resolved yet — otherwise the browser aborts the still-pending
+      // request the moment we reassign img.src again, which just spams
+      // NS_BINDING_ABORTED every interval instead of ever completing.
+      if (img.dataset.loading === '1') return;
+      setTimeout(() => {
+        img.dataset.loading = '1';
+        const doneLoading = () => { delete img.dataset.loading; };
+        img.onload = doneLoading;
+        img.onerror = doneLoading;
+        img.src = img.dataset.snapshotSrc + '?t=' + Date.now();
+      }, i * 250);
+    });
+  }
+  function resetGridView() {
+    gridCols.forEach((c) => {
+      c.classList.remove('d-none');
+      c.classList.add('col-md-6', 'col-xl-4');
+    });
+    if (gridBackBtn) gridBackBtn.classList.add('d-none');
+  }
+  function closeFocus() {
+    resetGridView();
+    if (focusCard) focusCard.classList.add('d-none');
+    if (backToGridBtn) backToGridBtn.classList.add('d-none');
+    if (controlsCard) controlsCard.classList.add('d-none');
+    video.pause();
+    video.removeAttribute('src');
+    image.removeAttribute('src');
+  }
+  gridTiles.forEach((tile) => {
+    tile.style.cursor = 'pointer';
+    tile.addEventListener('click', () => {
+      openFocus(tile.dataset.sourceId);
+    });
+  });
+  if (gridBackBtn) gridBackBtn.addEventListener('click', () => {
+    closeFocus();
+  });
+  if (backToGridBtn) backToGridBtn.addEventListener('click', closeFocus);
+  if (prevBtn) prevBtn.addEventListener('click', () => {
+    if (!orderedSourceIds.length) return;
+    const i = Math.max(0, orderedSourceIds.indexOf(activeSourceId));
+    openFocus(orderedSourceIds[(i - 1 + orderedSourceIds.length) % orderedSourceIds.length]);
+  });
+  if (nextBtn) nextBtn.addEventListener('click', () => {
+    if (!orderedSourceIds.length) return;
+    const i = Math.max(0, orderedSourceIds.indexOf(activeSourceId));
+    openFocus(orderedSourceIds[(i + 1) % orderedSourceIds.length]);
+  });
+
+  document.querySelectorAll('.cam-move-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      try {
+        const r = await fetch("{{ url_for('admin.api_camera_control') }}", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: btn.dataset.action, source_id: activeSourceId || 'primary' }),
+        });
+        const data = await r.json();
+        if (moveStatus) moveStatus.textContent = data.ok ? `Moved: ${btn.dataset.action}` : (data.error || 'Move failed');
+      } catch (e) {
+        if (moveStatus) moveStatus.textContent = 'Move request failed';
+      }
+    });
+  });
+
+  // Focus view stays idle until a camera tile is selected.
+  if (focusCard) focusCard.classList.add('d-none');
+  if (controlsCard) controlsCard.classList.add('d-none');
 
   function pollStatus() {
     fetch('/admin/api/status')
@@ -257,13 +392,19 @@
         } else {
           slsBadge.classList.add('d-none');
         }
+        if (activeSourceId === 'primary' && d.ghost_hunting_mode) {
+          ghostBadge.classList.remove('d-none');
+        } else {
+          ghostBadge.classList.add('d-none');
+        }
       })
       .catch(() => {});
 
     fetch('/admin/api/sensors')
       .then(r => r.json())
       .then((s) => {
-        if ((s.live_source_count || 0) !== initialSourceCount) {
+        const sourceKey = (s.live_sources || []).map((x) => x.id || '').join('|');
+        if ((s.live_source_count || 0) !== initialSourceCount || sourceKey !== initialSourceKey) {
           window.location.reload();
           return;
         }
@@ -273,6 +414,7 @@
         setBadge(sensorEls.multiDetection, `multi detection: ${s.multi_camera_detection ? (s.multi_camera_sources || 0) + ' source(s)' : 'off'}`, s.multi_camera_detection);
         setBadge(sensorEls.nightvision, `night vision: ${s.night_vision ? 'on' : 'off'}`, s.night_vision);
         setBadge(sensorEls.sls, `sls: ${s.sls_active ? 'active' : (s.sls_enabled ? 'enabled' : 'off')}`, s.sls_active || s.sls_enabled);
+        setBadge(sensorEls.ghost, `ghost hunting mode: ${s.ghost_hunting_mode ? 'ON' : 'off'}`, s.ghost_hunting_mode);
         setBadge(sensorEls.depth, `depth: ${s.depth_available ? 'available' : 'not available'}`, s.depth_available);
         setBadge(sensorEls.webcam, `webcam ${s.webcam_device}: ${s.webcam_present ? 'present' : 'missing'}`, s.webcam_present);
         setBadge(sensorEls.kinect, `kinect usb: ${s.kinect_fully_powered ? 'camera+audio+motor' : 'partial/offline'}`, s.kinect_fully_powered);
@@ -293,6 +435,8 @@
 
   pollStatus();
   setInterval(pollStatus, 3000);
+  refreshGridSnapshots();
+  setInterval(refreshGridSnapshots, GRID_SNAPSHOT_INTERVAL_MS);
 })();
 </script>
 {% endblock %}

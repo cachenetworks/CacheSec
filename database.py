@@ -208,7 +208,9 @@ def init_db() -> None:
         _default_settings = {
             "recognition_threshold":    str(config.RECOGNITION_THRESHOLD),
             "frame_skip":               str(config.FRAME_SKIP),
+            "camera_index":             str(config.CAMERA_INDEX),
             "night_vision_mode":        config.NIGHT_VISION_MODE,
+            "setup_cameras":            "",
             "camera_preferred_source":  config.CAMERA_PREFERRED_SOURCE,
             "usb_camera_indices":       config.USB_CAMERA_INDICES,
             "usb_camera_auto_discover": "true" if config.USB_CAMERA_AUTO_DISCOVER else "false",

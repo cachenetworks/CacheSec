@@ -1,6 +1,7 @@
 FROM python:3.11-slim
 
 ARG INSTALL_KINECT=true
+ARG INSTALL_KINECT2=false
 ARG INSTALL_DETECTRON2=false
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
@@ -56,7 +57,29 @@ RUN set -eux; \
             libusb-1.0-0-dev \
         "; \
     fi; \
+    if [ "$INSTALL_KINECT2" = "true" ]; then \
+        packages="$packages \
+            libusb-1.0-0 \
+            libusb-1.0-0-dev \
+            libglfw3 \
+            libglfw3-dev \
+            libjpeg62-turbo \
+            libjpeg62-turbo-dev \
+            libturbojpeg0 \
+            libturbojpeg0-dev \
+        "; \
+    fi; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $packages; \
+    if [ "$INSTALL_KINECT2" = "true" ]; then \
+        set +e; \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libfreenect2-2 libfreenect2-dev freenect2-tools; \
+        rc=$?; \
+        set -e; \
+        if [ "$rc" -ne 0 ]; then \
+            echo "libfreenect2 packages not found in this distro snapshot; image keeps Kinect2 runtime prerequisites only."; \
+        fi; \
+    fi; \
     rm -rf /var/lib/apt/lists/*; \
     mkdir -p \
         /data/logs \

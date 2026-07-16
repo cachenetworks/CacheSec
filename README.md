@@ -126,6 +126,7 @@ nano .env
 | `DISCORD_WEBHOOK_URL` | Your Discord channel webhook URL |
 | `DISCORD_MENTION_EVERYONE` | Set `true` to include `@everyone` in unknown Discord alerts; defaults to `false` |
 | `CAMERA_PREFERRED_SOURCE` | Use `webcam`, `kinect`, `ip`, or `tapo` |
+| `KINECT_ONE_CAMERA_INDEX` | Optional experimental Xbox One Kinect RGB V4L2 index fallback (e.g. `2`) when `CAMERA_PREFERRED_SOURCE=kinect` and Kinect v1 is unavailable |
 | `USB_CAMERA_AUTO_DISCOVER` | Automatically discover `/dev/video*` cameras for grid and detection |
 | `USB_CAMERA_INDICES` | Optional comma-separated extra USB/V4L2 indices to show and detect on |
 | `MULTI_CAMERA_DETECTION_ENABLED` | Set `true` to run detection on auxiliary USB, Kinect, and IP feeds |
@@ -236,6 +237,63 @@ The repository now includes:
 - `Dockerfile` â€” production image with Gunicorn, ffmpeg, and OpenCV runtime libs
 - `docker-compose.yml` â€” local container deployment with persistent `/data` storage
 - `.github/workflows/container.yml` â€” GitHub Actions workflow that builds and publishes a multi-arch image to GHCR
+
+### Recommended image variants
+
+Every variant bundles the **full feature set** — Kinect v1, Kinect v2, and
+Detectron2 — all built into the same image from the same Dockerfile. Variants
+only differ by platform/GPU target, not by which features are compiled in, so
+there's a single image to pull per platform instead of one per feature:
+
+- `cachesec:cpu` (also tagged `:latest`) — CPU-only runtime, `linux/amd64` + `linux/arm64`. Kinect v1 + Kinect v2 + Detectron2 (CPU torch).
+- `cachesec:pi` — Raspberry Pi (Pi 4/Pi 5, `linux/arm64`). Kinect v1 + Kinect v2. **No Detectron2** — there's no GPU on a Pi and CPU-only inference there isn't practically usable, so it's skipped to keep the build fast and the image small.
+- `cachesec:cuda11` — NVIDIA CUDA 11 runtime, `linux/amd64`. Kinect v1 + Kinect v2 + Detectron2 (CUDA 11 torch). Needs an NVIDIA GPU + `nvidia-container-toolkit` on the host to actually use the GPU at runtime.
+- `cachesec:cuda12` — NVIDIA CUDA 12 runtime, `linux/amd64`. Same as `cuda11` but CUDA 12 torch wheels.
+
+You can build them yourself from the same Dockerfile by changing build args:
+
+```bash
+# CPU (default): Kinect v1 + Kinect v2 + Detectron2, CPU torch
+docker build -t cachesec:cpu \
+  --build-arg INSTALL_KINECT=true \
+  --build-arg INSTALL_KINECT2=true \
+  --build-arg INSTALL_DETECTRON2=true .
+
+# Raspberry Pi: Kinect v1 + Kinect v2, no Detectron2
+docker build -t cachesec:pi \
+  --build-arg INSTALL_KINECT=true \
+  --build-arg INSTALL_KINECT2=true \
+  --build-arg INSTALL_DETECTRON2=false .
+
+# CUDA 11: Kinect v1 + Kinect v2 + Detectron2, CUDA 11 torch
+docker build -t cachesec:cuda11 \
+  --build-arg INSTALL_KINECT=true \
+  --build-arg INSTALL_KINECT2=true \
+  --build-arg INSTALL_DETECTRON2=true \
+  --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu118 .
+
+# CUDA 12: Kinect v1 + Kinect v2 + Detectron2, CUDA 12 torch
+docker build -t cachesec:cuda12 \
+  --build-arg INSTALL_KINECT=true \
+  --build-arg INSTALL_KINECT2=true \
+  --build-arg INSTALL_DETECTRON2=true \
+  --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121 .
+```
+
+If you don't need a feature (e.g. no Kinect hardware at all), set its
+`INSTALL_*` build arg to `false` for your own local build — the CI-published
+tags above always include everything for a given platform/GPU target.
+
+GitHub Actions, GitLab CI, Woodpecker, and Gitea/Forgejo Actions
+(`.github/workflows/container.yml`, `.gitlab-ci.yml`, `.woodpecker.yml`,
+`.gitea/workflows/container.yml`) all publish the same 4 tags: `cpu` (+
+`latest`), `pi`, `cuda11`, `cuda12`.
+
+> **Migrating from older tags:** `:kinect`, `:kinect1`, `:kinect2`,
+> `:detectron2`, `:detectron2-cpu`, `:detectron2-cuda11`, and
+> `:detectron2-cuda12` are no longer published — everything they provided is
+> now in `:cpu` (or `:cuda11`/`:cuda12` for the CUDA builds). Switch any
+> deployment pinned to one of the old tags to the matching new one above.
 
 ### Local Docker Compose
 
@@ -391,15 +449,25 @@ The GitHub Actions workflow publishes the image to:
 ghcr.io/<your-github-owner>/cachesec
 ```
 
-It builds these image variants:
+It builds these image variants (see [Recommended image variants](#recommended-image-variants)
+above for what each one bundles):
 
-- `:main`, `:latest`, and version tags: default smaller build without Kinect
-  packages (`INSTALL_KINECT=false`)
-- `:kinect`: Kinect-enabled build (`INSTALL_KINECT=true`)
-- `:detectron2`: Detectron2 CPU object-detection build without Kinect
+- `:cpu` / `:latest` and version tags — full feature set, `linux/amd64` + `linux/arm64`
+- `:pi` — full feature set minus Detectron2, `linux/arm64` (Raspberry Pi)
+- `:cuda11` / `:cuda12` — full feature set with CUDA 11/12 torch, `linux/amd64`
 
 It runs on pushes to `main`/`master`, version tags like `v1.0.0`, and manual
 dispatches. Pull requests build the image without pushing it.
+
+### Xbox One Kinect (experimental fallback)
+
+CacheSec now includes an **experimental** Xbox One Kinect fallback path for RGB
+video only. If Kinect v1 cannot start and `CAMERA_PREFERRED_SOURCE=kinect`,
+the app will try `KINECT_ONE_CAMERA_INDEX` as a direct V4L2 camera source.
+
+- No tilt/motor controls in this mode
+- No Kinect v1-style IR/depth/SLS path in this mode
+- Intended for community testing when Xbox One Kinect adapters/drivers are present
 
 ---
 
