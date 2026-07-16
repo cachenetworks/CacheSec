@@ -42,55 +42,38 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Every variant bundles the full feature set (Kinect v1 + Kinect v2 +
+          # Detectron2) — variants only differ by platform/GPU target now, not
+          # by which features are compiled in. Pi skips Detectron2: no GPU and
+          # CPU-only inference on Pi hardware isn't practically usable.
           - variant: cpu
-            install_kinect: "false"
-            install_kinect2: "false"
-            install_detectron2: "false"
+            install_kinect: "true"
+            install_kinect2: "true"
+            install_detectron2: "true"
             torch_index_url: "https://download.pytorch.org/whl/cpu"
             platforms: linux/amd64,linux/arm64
             tags: cpu latest
           - variant: pi
-            install_kinect: "false"
-            install_kinect2: "false"
+            install_kinect: "true"
+            install_kinect2: "true"
             install_detectron2: "false"
             torch_index_url: "https://download.pytorch.org/whl/cpu"
             platforms: linux/arm64
             tags: pi
-          - variant: kinect
+          - variant: cuda11
             install_kinect: "true"
-            install_kinect2: "false"
-            install_detectron2: "false"
-            torch_index_url: "https://download.pytorch.org/whl/cpu"
-            platforms: linux/amd64,linux/arm64
-            tags: kinect kinect1
-          - variant: kinect2
-            install_kinect: "false"
             install_kinect2: "true"
-            install_detectron2: "false"
-            torch_index_url: "https://download.pytorch.org/whl/cpu"
-            platforms: linux/amd64,linux/arm64
-            tags: kinect2
-          - variant: detectron2-cpu
-            install_kinect: "false"
-            install_kinect2: "false"
-            install_detectron2: "true"
-            torch_index_url: "https://download.pytorch.org/whl/cpu"
-            platforms: linux/amd64,linux/arm64
-            tags: detectron2 detectron2-cpu
-          - variant: detectron2-cuda11
-            install_kinect: "false"
-            install_kinect2: "false"
             install_detectron2: "true"
             torch_index_url: "https://download.pytorch.org/whl/cu118"
             platforms: linux/amd64
-            tags: cuda11 detectron2-cuda11
-          - variant: detectron2-cuda12
-            install_kinect: "false"
-            install_kinect2: "false"
+            tags: cuda11
+          - variant: cuda12
+            install_kinect: "true"
+            install_kinect2: "true"
             install_detectron2: "true"
             torch_index_url: "https://download.pytorch.org/whl/cu121"
             platforms: linux/amd64
-            tags: cuda12 detectron2-cuda12
+            tags: cuda12
 
     steps:
       - name: Checkout

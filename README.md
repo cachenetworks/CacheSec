@@ -240,56 +240,60 @@ The repository now includes:
 
 ### Recommended image variants
 
-Use separate tags so deployments stay simple and predictable:
+Every variant bundles the **full feature set** — Kinect v1, Kinect v2, and
+Detectron2 — all built into the same image from the same Dockerfile. Variants
+only differ by platform/GPU target, not by which features are compiled in, so
+there's a single image to pull per platform instead of one per feature:
 
-- `cachesec:cpu` — CPU-only runtime.
-- `cachesec:cuda11` — NVIDIA CUDA 11 compatible runtime.
-- `cachesec:cuda12` — NVIDIA CUDA 12 compatible runtime.
-- `cachesec:kinect` / `cachesec:kinect1` — Kinect v1 / Xbox 360-focused image (OpenKinect/libfreenect stack).
-- `cachesec:kinect2` — Kinect v2 / Xbox One-focused image (libfreenect2 prerequisites + optional distro packages when available).
-- `cachesec:pi` — Raspberry Pi image target (Pi 4 + Pi 5).
+- `cachesec:cpu` (also tagged `:latest`) — CPU-only runtime, `linux/amd64` + `linux/arm64`. Kinect v1 + Kinect v2 + Detectron2 (CPU torch).
+- `cachesec:pi` — Raspberry Pi (Pi 4/Pi 5, `linux/arm64`). Kinect v1 + Kinect v2. **No Detectron2** — there's no GPU on a Pi and CPU-only inference there isn't practically usable, so it's skipped to keep the build fast and the image small.
+- `cachesec:cuda11` — NVIDIA CUDA 11 runtime, `linux/amd64`. Kinect v1 + Kinect v2 + Detectron2 (CUDA 11 torch). Needs an NVIDIA GPU + `nvidia-container-toolkit` on the host to actually use the GPU at runtime.
+- `cachesec:cuda12` — NVIDIA CUDA 12 runtime, `linux/amd64`. Same as `cuda11` but CUDA 12 torch wheels.
 
-You can build them from the same Dockerfile by changing build args/environment:
+You can build them yourself from the same Dockerfile by changing build args:
 
 ```bash
-# CPU only
-docker build -t cachesec:cpu --build-arg INSTALL_KINECT=false --build-arg INSTALL_DETECTRON2=false .
+# CPU (default): Kinect v1 + Kinect v2 + Detectron2, CPU torch
+docker build -t cachesec:cpu \
+  --build-arg INSTALL_KINECT=true \
+  --build-arg INSTALL_KINECT2=true \
+  --build-arg INSTALL_DETECTRON2=true .
 
-# CUDA 11 example
+# Raspberry Pi: Kinect v1 + Kinect v2, no Detectron2
+docker build -t cachesec:pi \
+  --build-arg INSTALL_KINECT=true \
+  --build-arg INSTALL_KINECT2=true \
+  --build-arg INSTALL_DETECTRON2=false .
+
+# CUDA 11: Kinect v1 + Kinect v2 + Detectron2, CUDA 11 torch
 docker build -t cachesec:cuda11 \
-  --build-arg INSTALL_KINECT=false \
+  --build-arg INSTALL_KINECT=true \
+  --build-arg INSTALL_KINECT2=true \
   --build-arg INSTALL_DETECTRON2=true \
   --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu118 .
 
-# CUDA 12 example
+# CUDA 12: Kinect v1 + Kinect v2 + Detectron2, CUDA 12 torch
 docker build -t cachesec:cuda12 \
-  --build-arg INSTALL_KINECT=false \
+  --build-arg INSTALL_KINECT=true \
+  --build-arg INSTALL_KINECT2=true \
   --build-arg INSTALL_DETECTRON2=true \
   --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121 .
-
-# Kinect v1 / Xbox 360 image
-docker build -t cachesec:kinect1 --build-arg INSTALL_KINECT=true --build-arg INSTALL_KINECT2=false .
-
-# Kinect v2 / Xbox One image
-docker build -t cachesec:kinect2 --build-arg INSTALL_KINECT=false --build-arg INSTALL_KINECT2=true .
 ```
 
-For Raspberry Pi builds, publish `linux/arm64` images as `cachesec:pi` and keep
-`INSTALL_KINECT` disabled unless you are explicitly wiring Kinect hardware.
+If you don't need a feature (e.g. no Kinect hardware at all), set its
+`INSTALL_*` build arg to `false` for your own local build — the CI-published
+tags above always include everything for a given platform/GPU target.
 
-GitHub Actions (`.github/workflows/container.yml`) now publishes separated tags
-for:
+GitHub Actions, GitLab CI, Woodpecker, and Gitea/Forgejo Actions
+(`.github/workflows/container.yml`, `.gitlab-ci.yml`, `.woodpecker.yml`,
+`.gitea/workflows/container.yml`) all publish the same 4 tags: `cpu` (+
+`latest`), `pi`, `cuda11`, `cuda12`.
 
-- `cpu` (default multi-arch runtime)
-- `pi` (arm64 target for Pi 4/Pi 5)
-- `kinect` / `kinect1` (OpenKinect/libfreenect stack enabled)
-- `kinect2` (libfreenect2-oriented image)
-- `detectron2` / `detectron2-cpu`
-- `cuda11` / `detectron2-cuda11`
-- `cuda12` / `detectron2-cuda12`
-
-`detectron2-cpu` is published for both `linux/amd64` and `linux/arm64` so Pi/ARM64
-hosts can pull it directly when wheels are available for the dependency stack.
+> **Migrating from older tags:** `:kinect`, `:kinect1`, `:kinect2`,
+> `:detectron2`, `:detectron2-cpu`, `:detectron2-cuda11`, and
+> `:detectron2-cuda12` are no longer published — everything they provided is
+> now in `:cpu` (or `:cuda11`/`:cuda12` for the CUDA builds). Switch any
+> deployment pinned to one of the old tags to the matching new one above.
 
 ### Local Docker Compose
 
@@ -445,11 +449,15 @@ The GitHub Actions workflow publishes the image to:
 ghcr.io/<your-github-owner>/cachesec
 ```
 
-It builds these image variants:
+It builds these image variants (see [Recommended image variants](#recommended-image-variants)
+above for what each one bundles):
 
-- `:main`, `:latest`, and version tags: default smaller build without Kinect
-  packages (`INSTALL_KINECT=false`)
-- `:kinect`: Kinect-enabled build (`INSTALL_KINECT=true`)
+- `:cpu` / `:latest` and version tags — full feature set, `linux/amd64` + `linux/arm64`
+- `:pi` — full feature set minus Detectron2, `linux/arm64` (Raspberry Pi)
+- `:cuda11` / `:cuda12` — full feature set with CUDA 11/12 torch, `linux/amd64`
+
+It runs on pushes to `main`/`master`, version tags like `v1.0.0`, and manual
+dispatches. Pull requests build the image without pushing it.
 
 ### Xbox One Kinect (experimental fallback)
 
@@ -460,10 +468,6 @@ the app will try `KINECT_ONE_CAMERA_INDEX` as a direct V4L2 camera source.
 - No tilt/motor controls in this mode
 - No Kinect v1-style IR/depth/SLS path in this mode
 - Intended for community testing when Xbox One Kinect adapters/drivers are present
-- `:detectron2`: Detectron2 CPU object-detection build without Kinect
-
-It runs on pushes to `main`/`master`, version tags like `v1.0.0`, and manual
-dispatches. Pull requests build the image without pushing it.
 
 ---
 

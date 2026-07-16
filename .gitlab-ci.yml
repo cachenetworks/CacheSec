@@ -91,52 +91,35 @@ build:
   <<: *build_template
   parallel:
     matrix:
+      # Every variant bundles the full feature set (Kinect v1 + Kinect v2 +
+      # Detectron2) — variants only differ by platform/GPU target now, not
+      # by which features are compiled in. Pi skips Detectron2: no GPU and
+      # CPU-only inference on Pi hardware isn't practically usable.
       - VARIANT: cpu
-        INSTALL_KINECT: "false"
-        INSTALL_KINECT2: "false"
-        INSTALL_DETECTRON2: "false"
+        INSTALL_KINECT: "true"
+        INSTALL_KINECT2: "true"
+        INSTALL_DETECTRON2: "true"
         TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
         PLATFORMS: "linux/amd64,linux/arm64"
         BASE_TAGS: "cpu latest"
       - VARIANT: pi
-        INSTALL_KINECT: "false"
-        INSTALL_KINECT2: "false"
+        INSTALL_KINECT: "true"
+        INSTALL_KINECT2: "true"
         INSTALL_DETECTRON2: "false"
         TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
         PLATFORMS: "linux/arm64"
         BASE_TAGS: "pi"
-      - VARIANT: kinect
+      - VARIANT: cuda11
         INSTALL_KINECT: "true"
-        INSTALL_KINECT2: "false"
-        INSTALL_DETECTRON2: "false"
-        TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
-        PLATFORMS: "linux/amd64,linux/arm64"
-        BASE_TAGS: "kinect kinect1"
-      - VARIANT: kinect2
-        INSTALL_KINECT: "false"
         INSTALL_KINECT2: "true"
-        INSTALL_DETECTRON2: "false"
-        TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
-        PLATFORMS: "linux/amd64,linux/arm64"
-        BASE_TAGS: "kinect2"
-      - VARIANT: detectron2-cpu
-        INSTALL_KINECT: "false"
-        INSTALL_KINECT2: "false"
-        INSTALL_DETECTRON2: "true"
-        TORCH_INDEX_URL: "https://download.pytorch.org/whl/cpu"
-        PLATFORMS: "linux/amd64,linux/arm64"
-        BASE_TAGS: "detectron2 detectron2-cpu"
-      - VARIANT: detectron2-cuda11
-        INSTALL_KINECT: "false"
-        INSTALL_KINECT2: "false"
         INSTALL_DETECTRON2: "true"
         TORCH_INDEX_URL: "https://download.pytorch.org/whl/cu118"
         PLATFORMS: "linux/amd64"
-        BASE_TAGS: "cuda11 detectron2-cuda11"
-      - VARIANT: detectron2-cuda12
-        INSTALL_KINECT: "false"
-        INSTALL_KINECT2: "false"
+        BASE_TAGS: "cuda11"
+      - VARIANT: cuda12
+        INSTALL_KINECT: "true"
+        INSTALL_KINECT2: "true"
         INSTALL_DETECTRON2: "true"
         TORCH_INDEX_URL: "https://download.pytorch.org/whl/cu121"
         PLATFORMS: "linux/amd64"
-        BASE_TAGS: "cuda12 detectron2-cuda12"
+        BASE_TAGS: "cuda12"
