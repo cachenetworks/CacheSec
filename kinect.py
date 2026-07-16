@@ -165,6 +165,7 @@ class KinectSource:
         self._ready      = False
         self._error      = ""
         self._start_lock = threading.Lock()
+        self._next_retry_at = 0.0
         # Motor/LED dev opened separately (doesn't need full init)
         self._motor_ctx  = None
         self._motor_dev  = None
@@ -190,10 +191,22 @@ class KinectSource:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    # Minimum time between real hardware open attempts after a failed
+    # start(). Several call sites (grid thumbnail polling, the primary
+    # detection loop, auxiliary multi-camera detection) can all end up
+    # calling start() whenever the Kinect isn't ready — without a cooldown,
+    # a Kinect that genuinely can't open (unplugged, no 12V, USB interface
+    # held by another driver/process) gets hammered with open attempts as
+    # fast as those callers loop, which on libusb can itself perpetuate a
+    # busy/claimed interface state instead of ever letting it clear.
+    _RETRY_COOLDOWN_SECONDS = 5.0
+
     def start(self) -> bool:
         """Start frame capture thread. Returns True if Kinect is available."""
         if self._ready:
             return True
+        if time.monotonic() < self._next_retry_at:
+            return False
         if not self._start_lock.acquire(blocking=False):
             # A start attempt is already in progress on another thread —
             # don't race it into spawning a second capture thread against
@@ -201,7 +214,10 @@ class KinectSource:
             # False the same as "not ready yet, try again shortly".
             return False
         try:
-            return self._start_locked()
+            ok = self._start_locked()
+            if not ok:
+                self._next_retry_at = time.monotonic() + self._RETRY_COOLDOWN_SECONDS
+            return ok
         finally:
             self._start_lock.release()
 
