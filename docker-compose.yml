@@ -22,8 +22,9 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 5000
-      # Refuse to start with the historical predictable Flask secret.
+      # Refuse to start with predictable security credentials.
       SECRET_KEY: ${SECRET_KEY:?Set a strong random SECRET_KEY in .env before starting CacheSec}
+      CACHESEC_SETUP_TOKEN: ${CACHESEC_SETUP_TOKEN:?Set a strong random CACHESEC_SETUP_TOKEN in .env for first-run ownership claim}
       PROXY_COUNT: ${CACHESEC_PROXY_COUNT:-0}
       SESSION_COOKIE_SECURE: ${CACHESEC_SESSION_COOKIE_SECURE:-false}
       DATABASE_PATH: /data/cachesec.db
