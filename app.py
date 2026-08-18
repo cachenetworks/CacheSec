@@ -13,6 +13,7 @@ Notes on single worker:
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import signal
@@ -145,6 +146,39 @@ def create_app() -> Flask:
     app.register_blueprint(auth_bp)
     app.register_blueprint(admin_bp, url_prefix="/admin")
     app.register_blueprint(setup_bp)
+
+    # First-run ownership is protected by an operator-generated claim token.
+    # Visit /setup/?setup_token=<CACHESEC_SETUP_TOKEN> once from the Docker host;
+    # after constant-time validation the signed Flask session carries the claim
+    # through the rest of the wizard. This prevents "first visitor wins" admin
+    # creation even if an operator accidentally publishes the setup route.
+    @app.before_request
+    def _setup_claim_gate():
+        from flask import request, abort
+
+        if setup_complete():
+            return None
+
+        path = request.path or ""
+        if not path.startswith("/setup"):
+            return None
+
+        expected = os.getenv("CACHESEC_SETUP_TOKEN", "").strip()
+        if not expected:
+            logger.error("CACHESEC_SETUP_TOKEN is not configured; first-run setup is locked")
+            abort(503)
+
+        provided = (
+            request.args.get("setup_token", "").strip()
+            or request.headers.get("X-CacheSec-Setup-Token", "").strip()
+        )
+        if provided and hmac.compare_digest(provided, expected):
+            session["cachesec_setup_claimed"] = True
+            session.permanent = True
+
+        if not session.get("cachesec_setup_claimed"):
+            abort(403)
+        return None
 
     # First-run setup gate: until setup_complete=true in the settings table,
     # all routes redirect to /setup. Static assets and the wizard itself stay
